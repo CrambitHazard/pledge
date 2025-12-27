@@ -1,7 +1,7 @@
 
-import React from 'react';
+import React, { useState } from 'react';
 import { useLocation, Link, useNavigate } from 'react-router-dom';
-import { CheckCircle2, List, Trophy, Zap, LogOut, Users } from 'lucide-react';
+import { CheckCircle2, List, Trophy, Zap, LogOut, Users, Menu, X } from 'lucide-react';
 import { api } from '../services/mockService';
 import Logo from './Logo';
 
@@ -12,6 +12,7 @@ interface LayoutProps {
 const Layout: React.FC<LayoutProps> = ({ children }) => {
   const location = useLocation();
   const navigate = useNavigate();
+  const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   
   let user;
   try {
@@ -31,6 +32,10 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
   const isAuthPage = location.pathname === '/auth';
   const hasGroup = user?.groupId;
 
+  const closeMobileMenu = () => {
+    setMobileMenuOpen(false);
+  };
+
   if (isAuthPage) {
     return <div className="min-h-screen bg-[#FFFBF5] flex flex-col justify-center">{children}</div>;
   }
@@ -45,7 +50,7 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
       <nav className="fixed top-0 left-0 right-0 z-50 bg-[#FFFBF5]/80 backdrop-blur-lg border-b border-slate-200/50 supports-[backdrop-filter]:bg-[#FFFBF5]/60">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
           <div className="flex justify-between h-20">
-            <div className="flex items-center">
+            <div className="flex items-center flex-1">
               {/* Logo */}
               <div className="flex-shrink-0 flex items-center gap-3">
                 <div className="bg-violet-600 p-2 rounded-xl shadow-lg shadow-violet-200 rotate-3 hover:rotate-6 transition-transform">
@@ -79,10 +84,25 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
               </div>
             </div>
 
-            {/* Profile / Right Side */}
-            <div className="flex items-center">
-               <Link 
+            {/* Mobile Menu Button & Profile */}
+            <div className="flex items-center gap-2">
+              {/* Mobile Menu Button */}
+              <button
+                onClick={() => setMobileMenuOpen(!mobileMenuOpen)}
+                className="sm:hidden p-2 rounded-lg hover:bg-white transition-colors"
+                aria-label="Toggle menu"
+              >
+                {mobileMenuOpen ? (
+                  <X size={24} className="text-slate-700" />
+                ) : (
+                  <Menu size={24} className="text-slate-700" />
+                )}
+              </button>
+
+              {/* Profile */}
+              <Link 
                 to="/profile"
+                onClick={closeMobileMenu}
                 className={`flex items-center gap-3 p-1.5 rounded-full hover:bg-white transition-all border border-transparent hover:border-slate-100 hover:shadow-sm ${
                     location.pathname === '/profile' ? 'bg-white border-slate-100 shadow-sm' : ''
                 }`}
@@ -97,6 +117,33 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
             </div>
           </div>
         </div>
+
+        {/* Mobile Menu */}
+        {mobileMenuOpen && (
+          <div className="sm:hidden border-t border-slate-200/50 bg-[#FFFBF5]/95 backdrop-blur-lg">
+            <div className="px-4 py-4 space-y-2">
+              {navItems.map((item) => {
+                const Icon = item.icon;
+                const isActive = location.pathname === item.path;
+                return (
+                  <Link
+                    key={item.path}
+                    to={item.path}
+                    onClick={closeMobileMenu}
+                    className={`flex items-center px-4 py-3 rounded-xl text-sm font-bold transition-all duration-200 ${
+                      isActive
+                        ? 'bg-violet-100 text-violet-700 shadow-sm'
+                        : 'bg-transparent text-slate-500 hover:bg-slate-100 hover:text-slate-900'
+                    }`}
+                  >
+                    <Icon size={20} className={`mr-3 ${isActive ? 'stroke-[2.5px]' : 'stroke-2'}`} />
+                    {item.label}
+                  </Link>
+                );
+              })}
+            </div>
+          </div>
+        )}
       </nav>
 
       {/* Main Content Area */}

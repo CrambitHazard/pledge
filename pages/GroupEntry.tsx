@@ -14,11 +14,47 @@ const GroupEntry: React.FC = () => {
   const [inviteCode, setInviteCode] = useState('');
   const [error, setError] = useState('');
 
-  // Auto-fill invite code from URL if present and auto-join
-  useEffect(() => {
+  // Extract invite code from URL params or hash (mobile fallback)
+  const extractInviteCode = React.useCallback((): string | null => {
+    // First try URL params (works on desktop)
     if (urlInviteCode) {
-      setInviteCode(urlInviteCode);
-      // Auto-submit if code is in URL (give it a moment for component to mount)
+      return urlInviteCode;
+    }
+    
+    // Fallback: read directly from hash (more reliable on mobile)
+    const hash = window.location.hash;
+    const hashMatch = hash.match(/\/join\/([^\/\?#]+)/);
+    if (hashMatch && hashMatch[1]) {
+      return hashMatch[1];
+    }
+    
+    return null;
+  }, [urlInviteCode]);
+
+  // Auto-fill invite code from URL if present
+  useEffect(() => {
+    const codeFromUrl = extractInviteCode();
+    if (codeFromUrl) {
+      // Normalize the invite code (handle URL encoding and case)
+      let normalizedCode: string;
+      try {
+        normalizedCode = decodeURIComponent(codeFromUrl).trim().toUpperCase();
+      } catch {
+        // If decode fails, just uppercase
+        normalizedCode = codeFromUrl.trim().toUpperCase();
+      }
+      
+      // Remove any non-alphanumeric characters
+      normalizedCode = normalizedCode.replace(/[^A-Z0-9]/g, '');
+      
+      if (!normalizedCode) {
+        setError('Invalid invite code format');
+        return;
+      }
+      
+      setInviteCode(normalizedCode);
+      
+      // Try auto-join after a delay (mobile browsers may need more time)
       const timer = setTimeout(() => {
         setError('');
         try {
@@ -29,15 +65,39 @@ const GroupEntry: React.FC = () => {
             return;
           }
           
-          api.joinGroup(urlInviteCode);
+          // Attempt to join
+          api.joinGroup(normalizedCode);
           navigate('/', { replace: true });
         } catch (err: any) {
-          setError(err.message || 'Failed to join group');
+          // Don't auto-join on error, let user manually click the button
+          setError(err.message || 'Failed to join group. Please try clicking "Join Group" button.');
         }
-      }, 300);
+      }, 800); // Increased delay for mobile browsers
       return () => clearTimeout(timer);
     }
-  }, [urlInviteCode, navigate]);
+  }, [urlInviteCode, navigate, extractInviteCode]);
+
+  // Listen for hash changes (mobile browser navigation)
+  useEffect(() => {
+    const handleHashChange = () => {
+      const codeFromUrl = extractInviteCode();
+      if (codeFromUrl && !inviteCode) {
+        let normalizedCode: string;
+        try {
+          normalizedCode = decodeURIComponent(codeFromUrl).trim().toUpperCase();
+        } catch {
+          normalizedCode = codeFromUrl.trim().toUpperCase();
+        }
+        normalizedCode = normalizedCode.replace(/[^A-Z0-9]/g, '');
+        if (normalizedCode) {
+          setInviteCode(normalizedCode);
+        }
+      }
+    };
+
+    window.addEventListener('hashchange', handleHashChange);
+    return () => window.removeEventListener('hashchange', handleHashChange);
+  }, [extractInviteCode, inviteCode]);
 
   const handleCreate = (e: React.FormEvent) => {
     e.preventDefault();
@@ -50,15 +110,38 @@ const GroupEntry: React.FC = () => {
     }
   };
 
-  const handleJoin = (e: React.FormEvent) => {
-    e.preventDefault();
+  const handleJoin = (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
     setError('');
+    
+    // Use URL code if present, otherwise use input
+    const codeFromUrl = extractInviteCode();
+    let codeToUse = codeFromUrl || inviteCode;
+    
+    if (!codeToUse || !codeToUse.trim()) {
+      setError('Please enter an invite code');
+      return;
+    }
+    
+    // Normalize the code
     try {
-      // Service now handles normalization, just pass the raw input
-      api.joinGroup(inviteCode);
-      navigate('/');
+      codeToUse = decodeURIComponent(codeToUse).trim().toUpperCase();
+    } catch {
+      codeToUse = codeToUse.trim().toUpperCase();
+    }
+    codeToUse = codeToUse.replace(/[^A-Z0-9]/g, '');
+    
+    if (!codeToUse) {
+      setError('Invalid invite code format');
+      return;
+    }
+    
+    try {
+      // Service now handles normalization, but we'll normalize here too for mobile compatibility
+      api.joinGroup(codeToUse);
+      navigate('/', { replace: true });
     } catch (err: any) {
-      setError(err.message || 'Failed to join group');
+      setError(err.message || 'Failed to join group. Please check the invite code and try again.');
     }
   };
 
@@ -143,11 +226,24 @@ const GroupEntry: React.FC = () => {
               <Input 
                 placeholder="Enter Invite Code" 
                 value={inviteCode}
-                onChange={(e) => setInviteCode(e.target.value)}
+                onChange={(e) => setInviteCode(e.target.value.toUpperCase())}
+                autoComplete="off"
+                autoCapitalize="characters"
                 required
               />
-              <Button type="submit" variant="secondary" fullWidth disabled={!inviteCode.trim()}>
-                Join Group
+              {(urlInviteCode || extractInviteCode()) && (
+                <div className="text-xs text-slate-500 font-medium text-center">
+                  Invite code detected from link. Click below to join.
+                </div>
+              )}
+              <Button 
+                type="submit" 
+                variant="secondary" 
+                fullWidth 
+                disabled={!inviteCode.trim() && !extractInviteCode()}
+                onClick={() => handleJoin()}
+              >
+                {(urlInviteCode || extractInviteCode()) ? 'Join Group Now' : 'Join Group'}
               </Button>
             </form>
           </div>

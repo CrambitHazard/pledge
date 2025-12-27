@@ -59,16 +59,55 @@ const Profile: React.FC = () => {
 
   const copyInviteCode = async () => {
     if (group?.inviteCode) {
-        await navigator.clipboard.writeText(group.inviteCode);
+        try {
+            // Use modern clipboard API with fallback for older browsers/mobile
+            if (navigator.clipboard && navigator.clipboard.writeText) {
+                await navigator.clipboard.writeText(group.inviteCode);
+            } else {
+                // Fallback for older browsers/mobile
+                const textArea = document.createElement('textarea');
+                textArea.value = group.inviteCode;
+                textArea.style.position = 'fixed';
+                textArea.style.opacity = '0';
+                document.body.appendChild(textArea);
+                textArea.select();
+                document.execCommand('copy');
+                document.body.removeChild(textArea);
+            }
+        } catch (e: any) {
+            console.error('Failed to copy invite code:', e);
+            // Fallback: show code in alert for manual copy
+            alert(`Invite Code: ${group.inviteCode}\n\nPlease copy this code manually.`);
+        }
     }
   };
 
   const copyInviteLink = async () => {
     try {
         const link = api.getInviteLink();
-        await navigator.clipboard.writeText(link);
+        // Use modern clipboard API with fallback for older browsers/mobile
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+            await navigator.clipboard.writeText(link);
+        } else {
+            // Fallback for older browsers/mobile
+            const textArea = document.createElement('textarea');
+            textArea.value = link;
+            textArea.style.position = 'fixed';
+            textArea.style.opacity = '0';
+            document.body.appendChild(textArea);
+            textArea.select();
+            document.execCommand('copy');
+            document.body.removeChild(textArea);
+        }
     } catch (e: any) {
         console.error('Failed to copy invite link:', e);
+        // Fallback: show link in alert for manual copy
+        try {
+            const link = api.getInviteLink();
+            alert(`Invite Link: ${link}\n\nPlease copy this link manually.`);
+        } catch {
+            alert('Failed to generate invite link. Please try again.');
+        }
     }
   };
 
@@ -89,6 +128,18 @@ const Profile: React.FC = () => {
         }
     } catch (e: any) {
         alert(e.message || 'Failed to remove member');
+    }
+  };
+
+  const handleLeaveGroup = () => {
+    if (!confirm('Are you sure you want to leave this group? You will need an invite code to rejoin.')) {
+        return;
+    }
+    try {
+        api.leaveGroup();
+        navigate('/group-entry', { replace: true });
+    } catch (err: any) {
+        alert(err.message || 'Failed to leave group');
     }
   };
 
@@ -284,6 +335,18 @@ const Profile: React.FC = () => {
                                         </div>
                                     ))}
                                 </div>
+                            </div>
+                        )}
+
+                        {/* Leave Group Button */}
+                        {isOwnProfile && group && group.creatorId !== currentUser.id && (
+                            <div className="mt-6 pt-6 border-t border-white/10">
+                                <button
+                                    onClick={handleLeaveGroup}
+                                    className="w-full p-3 bg-red-500/20 hover:bg-red-500/30 text-red-200 rounded-xl transition-colors font-bold flex items-center justify-center gap-2 border border-red-500/30"
+                                >
+                                    <X size={18} /> Leave Group
+                                </button>
                             </div>
                         )}
                     </div>

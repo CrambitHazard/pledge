@@ -640,13 +640,30 @@ export const api = {
     const user = api.getUser();
     if (user.groupId) throw new Error("User already in a group");
 
-    // Normalize invite code: trim whitespace and convert to uppercase
-    const normalizedCode = inviteCode.trim().toUpperCase();
+    // Normalize invite code: trim whitespace, handle URL encoding, and convert to uppercase
+    let normalizedCode = inviteCode.trim();
+    // Handle URL-encoded characters
+    try {
+      normalizedCode = decodeURIComponent(normalizedCode);
+    } catch {
+      // If decode fails, use original
+    }
+    normalizedCode = normalizedCode.trim().toUpperCase();
+    
+    // Remove any non-alphanumeric characters that might have been added
+    normalizedCode = normalizedCode.replace(/[^A-Z0-9]/g, '');
+    
     if (!normalizedCode) throw new Error("Invalid invite code");
 
     const groups = api._getGroups();
-    const groupIndex = groups.findIndex(g => g.inviteCode.toUpperCase() === normalizedCode);
-    if (groupIndex === -1) throw new Error("Invalid invite code");
+    const groupIndex = groups.findIndex(g => {
+      const groupCode = (g.inviteCode || '').trim().toUpperCase();
+      return groupCode === normalizedCode;
+    });
+    
+    if (groupIndex === -1) {
+      throw new Error(`Invalid invite code "${normalizedCode}". Please check and try again.`);
+    }
 
     const group = groups[groupIndex];
     if (!group.memberIds.includes(user.id)) {
@@ -670,6 +687,52 @@ export const api = {
     }
 
       return group;
+  },
+
+  /**
+   * Leave the current group (user leaves themselves)
+   */
+  leaveGroup: (): void => {
+    const currentUser = api.getUser();
+    if (!currentUser.groupId) throw new Error("Not in a group");
+
+    const groups = api._getGroups();
+    const groupIndex = groups.findIndex(g => g.id === currentUser.groupId);
+    if (groupIndex === -1) throw new Error("Group not found");
+
+    const group = groups[groupIndex];
+    
+    // Cannot leave if you're the creator (must transfer ownership or delete group)
+    if (group.creatorId === currentUser.id) {
+      throw new Error("Group creator cannot leave. Transfer ownership or remove all members first.");
+    }
+
+    if (!group.memberIds.includes(currentUser.id)) {
+      throw new Error("User is not a member of this group");
+    }
+
+    // Remove from group
+    const updatedGroups = [...groups];
+    updatedGroups[groupIndex] = {
+      ...group,
+      memberIds: group.memberIds.filter(id => id !== currentUser.id),
+      adminIds: (group.adminIds || []).filter(id => id !== currentUser.id)
+    };
+
+    // Remove groupId from user
+    const users = api._getUsers();
+    const userIndex = users.findIndex(u => u.id === currentUser.id);
+    if (userIndex !== -1) {
+      const updatedUsers = [...users];
+      updatedUsers[userIndex] = { ...updatedUsers[userIndex], groupId: undefined };
+      
+      batchSetStorage([
+        { key: KEYS.GROUPS, value: updatedGroups },
+        { key: KEYS.USERS, value: updatedUsers }
+      ]);
+    } else {
+      throw new Error("User not found");
+    }
   },
 
   /**
@@ -750,9 +813,12 @@ export const api = {
     const group = api._getGroups().find(g => g.id === user.groupId);
     if (!group) throw new Error("Group not found");
 
-    // Generate link with invite code as hash parameter
+    // Generate link with invite code - ensure it works on mobile browsers
+    // Use hash routing format that works consistently across devices
     const baseUrl = window.location.origin + window.location.pathname;
-    return `${baseUrl}#/join/${group.inviteCode}`;
+    // Remove trailing slash if present, then add hash route
+    const cleanBase = baseUrl.replace(/\/$/, '');
+    return `${cleanBase}#/join/${encodeURIComponent(group.inviteCode)}`;
   },
 
   /**
