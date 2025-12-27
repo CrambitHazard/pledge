@@ -7,7 +7,57 @@ const KEYS = {
   RESOLUTIONS: 'rl_resolutions_v2', 
   FEED: 'rl_feed_v2',
   CONFESSIONS: 'rl_confessions',
-  INIT: 'rl_initialized_v3' // Incremented to force re-seed
+  INIT: 'rl_initialized_v3'
+};
+
+// --- Utility Functions ---
+
+/**
+ * Generate a unique ID using timestamp + random component
+ * Prevents collisions even with rapid calls
+ */
+const generateId = (prefix: string): string => {
+  const timestamp = Date.now();
+  const random = Math.random().toString(36).substring(2, 9);
+  return `${prefix}_${timestamp}_${random}`;
+};
+
+/**
+ * Check if localStorage is available and has space
+ */
+const isStorageAvailable = (): boolean => {
+  try {
+    const test = '__storage_test__';
+    localStorage.setItem(test, test);
+    localStorage.removeItem(test);
+    return true;
+  } catch {
+    return false;
+  }
+};
+
+/**
+ * Get estimated storage size in bytes
+ */
+const getStorageSize = (): number => {
+  let total = 0;
+  for (let key in localStorage) {
+    if (localStorage.hasOwnProperty(key)) {
+      total += localStorage[key].length + key.length;
+    }
+  }
+  return total;
+};
+
+/**
+ * Check if we're approaching storage quota (5MB limit, warn at 4MB)
+ */
+const checkStorageQuota = (): void => {
+  const size = getStorageSize();
+  const maxSize = 4 * 1024 * 1024; // 4MB warning threshold
+  if (size > maxSize) {
+    console.warn(`Storage quota warning: ${(size / 1024 / 1024).toFixed(2)}MB used`);
+  }
 };
 
 // --- Date Helpers ---
@@ -55,7 +105,7 @@ const getStartOfQuarter = (): Date => {
 const getStartOfWeek = (): Date => {
     const d = new Date();
     const day = d.getDay();
-    const diff = d.getDate() - day + (day === 0 ? -6 : 1); // adjust when day is sunday
+    const diff = d.getDate() - day + (day === 0 ? -6 : 1);
     const start = new Date(d.setDate(diff));
     start.setHours(0,0,0,0);
     return start;
@@ -65,12 +115,10 @@ const calculateStreak = (history: Record<string, ResolutionStatus>, todayStatus:
   let streak = 0;
   const today = new Date();
   
-  // Check today first
   if (todayStatus === ResolutionStatus.COMPLETED) {
       streak = 1;
   }
 
-  // Check backwards from yesterday
   const current = new Date(today);
   current.setDate(current.getDate() - 1);
   
@@ -88,35 +136,208 @@ const calculateStreak = (history: Record<string, ResolutionStatus>, todayStatus:
   return streak;
 };
 
-// --- Storage Wrappers ---
+// --- Enhanced Storage Wrappers with Error Handling ---
 
+/**
+ * Get data from localStorage with proper error handling and validation
+ */
 const getStorage = <T>(key: string, initial: T): T => {
+  if (!isStorageAvailable()) {
+    console.error('localStorage is not available');
+    return initial;
+  }
+
   try {
-      const stored = localStorage.getItem(key);
-      if (!stored) {
+    const stored = localStorage.getItem(key);
+    if (!stored) {
+      // Initialize with default value
+      try {
         localStorage.setItem(key, JSON.stringify(initial));
-        return initial;
+      } catch (e) {
+        console.error(`Failed to initialize storage for key ${key}:`, e);
       }
-      return JSON.parse(stored);
-  } catch (e) {
       return initial;
+    }
+
+    const parsed = JSON.parse(stored);
+    
+    // Basic validation - ensure parsed data matches expected type
+    if (Array.isArray(initial) && !Array.isArray(parsed)) {
+      console.error(`Data corruption detected for ${key}: expected array, got ${typeof parsed}`);
+      return initial;
+    }
+    
+    return parsed;
+  } catch (e) {
+    console.error(`Error reading storage for key ${key}:`, e);
+    // Log corruption but don't silently fail - return initial
+    console.warn(`Data corruption detected for ${key}, resetting to initial value`);
+    try {
+      localStorage.removeItem(key);
+      localStorage.setItem(key, JSON.stringify(initial));
+    } catch (cleanupError) {
+      console.error(`Failed to cleanup corrupted data for ${key}:`, cleanupError);
+    }
+    return initial;
   }
 };
 
-const setStorage = (key: string, value: any) => {
-  localStorage.setItem(key, JSON.stringify(value));
+/**
+ * Set data to localStorage with proper error handling and quota checking
+ */
+const setStorage = (key: string, value: any): void => {
+  if (!isStorageAvailable()) {
+    throw new Error('localStorage is not available');
+  }
+
+  try {
+    checkStorageQuota();
+    const serialized = JSON.stringify(value);
+    localStorage.setItem(key, serialized);
+  } catch (e: any) {
+    // Handle quota exceeded error specifically
+    if (e.name === 'QuotaExceededError' || e.code === 22) {
+      console.error(`Storage quota exceeded for key ${key}`);
+      throw new Error('Storage quota exceeded. Please clear some data.');
+    }
+    // Handle other errors
+    console.error(`Error writing to storage for key ${key}:`, e);
+    throw new Error(`Failed to save data: ${e.message}`);
+  }
 };
 
-// --- Internal Logic Helpers (Prevents Hoisting Issues) ---
+/**
+ * Batch write multiple keys atomically (as much as possible with localStorage)
+ * If any write fails, none are committed
+ */
+const batchSetStorage = (updates: Array<{ key: string; value: any }>): void => {
+  if (!isStorageAvailable()) {
+    throw new Error('localStorage is not available');
+  }
+
+  // Store original values for rollback
+  const originals: Array<{ key: string; value: string | null }> = [];
+  
+  try {
+    // Save originals
+    for (const update of updates) {
+      originals.push({ key: update.key, value: localStorage.getItem(update.key) });
+    }
+
+    // Attempt all writes
+    for (const update of updates) {
+      setStorage(update.key, update.value);
+    }
+  } catch (e) {
+    // Rollback on failure
+    console.error('Batch write failed, rolling back:', e);
+    for (const original of originals) {
+      try {
+        if (original.value === null) {
+          localStorage.removeItem(original.key);
+        } else {
+          localStorage.setItem(original.key, original.value);
+        }
+      } catch (rollbackError) {
+        console.error(`Failed to rollback ${original.key}:`, rollbackError);
+      }
+    }
+    throw e;
+  }
+};
+
+// --- Data Validation Helpers ---
+
+/**
+ * Validate user data structure
+ */
+const validateUser = (user: any): user is User => {
+  return (
+    user &&
+    typeof user.id === 'string' &&
+    typeof user.name === 'string' &&
+    typeof user.email === 'string' &&
+    typeof user.avatarInitials === 'string' &&
+    typeof user.score === 'number' &&
+    typeof user.monthlyScore === 'number' &&
+    typeof user.streak === 'number' &&
+    typeof user.rank === 'number' &&
+    Array.isArray(user.badges)
+  );
+};
+
+/**
+ * Validate group data structure
+ */
+const validateGroup = (group: any): group is Group => {
+  return (
+    group &&
+    typeof group.id === 'string' &&
+    typeof group.name === 'string' &&
+    typeof group.inviteCode === 'string' &&
+    Array.isArray(group.memberIds) &&
+    typeof group.creatorId === 'string'
+  );
+};
+
+/**
+ * Validate resolution data structure
+ */
+const validateResolution = (res: any): res is Resolution => {
+  return (
+    res &&
+    typeof res.id === 'string' &&
+    typeof res.createdUserId === 'string' &&
+    typeof res.createdAt === 'string' &&
+    typeof res.title === 'string' &&
+    typeof res.difficulty === 'number' &&
+    typeof res.isPrivate === 'boolean' &&
+    typeof res.history === 'object'
+  );
+};
+
+/**
+ * Validate relationships between entities
+ */
+const validateRelationships = (users: User[], groups: Group[], resolutions: Resolution[]): void => {
+  const userIds = new Set(users.map(u => u.id));
+  const groupIds = new Set(groups.map(g => g.id));
+
+  // Validate user.groupId references
+  for (const user of users) {
+    if (user.groupId && !groupIds.has(user.groupId)) {
+      console.warn(`User ${user.id} references non-existent group ${user.groupId}`);
+      user.groupId = undefined;
+    }
+  }
+
+  // Validate group.memberIds references
+  for (const group of groups) {
+    for (const memberId of group.memberIds) {
+      if (!userIds.has(memberId)) {
+        console.warn(`Group ${group.id} references non-existent user ${memberId}`);
+        group.memberIds = group.memberIds.filter(id => id !== memberId);
+      }
+    }
+  }
+
+  // Validate resolution.createdUserId references
+  for (const res of resolutions) {
+    if (!userIds.has(res.createdUserId)) {
+      console.warn(`Resolution ${res.id} references non-existent user ${res.createdUserId}`);
+    }
+  }
+};
+
+// --- Internal Logic Helpers ---
 
 const determineIdentityLabel = (user: User, resolutions: Resolution[]): IdentityLabel => {
-    // Analyze behavior since start of quarter
     const startOfQuarter = getStartOfQuarter();
     const today = new Date();
     const dates = getDatesInRange(startOfQuarter, today);
     const totalDays = dates.length;
     
-    if (totalDays < 7) return 'Consistent Starter'; // Default for new quarter
+    if (totalDays < 7) return 'Consistent Starter';
 
     let completed = 0;
     let opportunities = 0;
@@ -162,137 +383,66 @@ const determineIdentityLabel = (user: User, resolutions: Resolution[]): Identity
     return 'Sleeping Giant';
 };
 
-const recalculateScoresInternal = (users: User[], resolutions: Resolution[]) => {
-      const startOfMonth = getStartOfMonth();
+/**
+ * Recalculate scores without mutating input arrays
+ */
+const recalculateScoresInternal = (users: User[], resolutions: Resolution[]): { users: User[]; resolutions: Resolution[] } => {
+  const startOfMonth = getStartOfMonth();
 
-      users.forEach(user => {
-          const userRes = resolutions.filter(r => r.createdUserId === user.id && !r.isPrivate && !r.archivedAt);
-          let totalScore = 0;
-          let monthlyScore = 0;
-          let maxStreak = 0;
+  // Create copies to avoid mutation
+  const updatedUsers = users.map(user => ({ ...user }));
+  const updatedResolutions = resolutions.map(res => ({ ...res }));
 
-          userRes.forEach(r => {
-              // Calculate Lifetime Score
-              const allCompletions = Object.values(r.history).filter(s => s === ResolutionStatus.COMPLETED).length;
-              totalScore += (allCompletions * r.effectiveDifficulty);
-              
-              // Calculate Monthly Score (Step 2K)
-              const monthCompletions = Object.entries(r.history).filter(([date, status]) => {
-                  return status === ResolutionStatus.COMPLETED && new Date(date) >= startOfMonth;
-              }).length;
-              monthlyScore += (monthCompletions * r.effectiveDifficulty);
+  updatedUsers.forEach(user => {
+      const userRes = updatedResolutions.filter(r => r.createdUserId === user.id && !r.isPrivate && !r.archivedAt);
+      let totalScore = 0;
+      let monthlyScore = 0;
+      let maxStreak = 0;
 
-              // Calculate Streak
-              const s = calculateStreak(r.history, r.todayStatus);
-              if (s > maxStreak) maxStreak = s;
-              
-              // Update Resolution State
-              r.currentStreak = s;
-          });
-
-          user.score = totalScore;
-          user.monthlyScore = monthlyScore;
-          user.streak = maxStreak;
+      userRes.forEach(r => {
+          const allCompletions = Object.values(r.history).filter(s => s === ResolutionStatus.COMPLETED).length;
+          totalScore += (allCompletions * r.effectiveDifficulty);
           
-          // Identity Label Update
-          user.seasonalLabel = determineIdentityLabel(user, userRes);
+          const monthCompletions = Object.entries(r.history).filter(([date, status]) => {
+              return status === ResolutionStatus.COMPLETED && new Date(date) >= startOfMonth;
+          }).length;
+          monthlyScore += (monthCompletions * r.effectiveDifficulty);
+
+          const s = calculateStreak(r.history, r.todayStatus);
+          if (s > maxStreak) maxStreak = s;
+          
+          r.currentStreak = s;
       });
 
-      setStorage(KEYS.USERS, users);
-      setStorage(KEYS.RESOLUTIONS, resolutions);
+      user.score = totalScore;
+      user.monthlyScore = monthlyScore;
+      user.streak = maxStreak;
+      user.seasonalLabel = determineIdentityLabel(user, userRes);
+  });
+
+  // Validate relationships before saving
+  validateRelationships(updatedUsers, getStorage(KEYS.GROUPS, []), updatedResolutions);
+
+  return { users: updatedUsers, resolutions: updatedResolutions };
 };
 
-// --- Data Seeding (The "Real Database" Simulation) ---
+// --- Data Seeding ---
 
-const generateHistoricalData = (userId: string, resId: string, daysBack: number, consistencyRate: number): Record<string, ResolutionStatus> => {
-    const history: Record<string, ResolutionStatus> = {};
-    const today = new Date();
-    
-    for (let i = 1; i <= daysBack; i++) {
-        const d = new Date(today);
-        d.setDate(d.getDate() - i);
-        const key = d.toISOString().split('T')[0];
-        
-        // Randomly determine status based on consistency rate
-        const roll = Math.random();
-        if (roll < consistencyRate) {
-            history[key] = ResolutionStatus.COMPLETED;
-        } else if (roll < consistencyRate + 0.1) {
-            // Small chance of missed
-            history[key] = ResolutionStatus.MISSED;
-        }
-        // Remaining is UNCHECKED (gap in data)
-    }
-    return history;
-};
-
-const initializeDatabase = () => {
-    // Determine start of year for seeding
-    const startOfYear = new Date(new Date().getFullYear(), 0, 1);
-    const daysSinceStartOfYear = Math.floor((new Date().getTime() - startOfYear.getTime()) / (1000 * 60 * 60 * 24));
-
-    // 1. Users
-    const users: User[] = [
-      { 
-        id: 'u1', name: 'Alex Doe', email: 'alex@example.com', password: 'password', 
-        avatarInitials: 'AD', score: 0, monthlyScore: 0, streak: 0, rank: 2, rankChange: 'same', groupId: 'g1', honestyScore: 100, isDailyHero: false, badges: [], seasonalLabel: 'Consistent Starter' 
-      },
-      { 
-        id: 'u2', name: 'Sarah Smith', email: 'sarah@example.com', password: 'password',
-        avatarInitials: 'SS', score: 0, monthlyScore: 0, streak: 0, rank: 1, rankChange: 'up', groupId: 'g1', honestyScore: 98, isDailyHero: false, badges: ['7-Day Streak', '30-Day Streak'], seasonalLabel: 'Relentless Maintainer' 
-      }
-    ];
-
-    // 2. Resolutions (Backfilled with Real Data)
-    const resolutions: Resolution[] = [
-        // Sarah's Goals (High Consistency)
-        {
-            id: 'r_sarah_1', createdUserId: 'u2', createdAt: startOfYear.toISOString(),
-            title: 'Morning Run 5k', category: 'Health', type: ResolutionType.BINARY, difficulty: 4, isPrivate: false,
-            peerDifficultyVotes: {}, effectiveDifficulty: 4, credibility: {},
-            history: generateHistoricalData('u2', 'r_sarah_1', daysSinceStartOfYear, 0.9), // 90% consistency
-            currentStreak: 12, todayStatus: ResolutionStatus.UNCHECKED, isBroken: false, bets: [], subGoals: []
-        },
-        // Alex's Goals (Medium Consistency)
-        {
-            id: 'r_alex_1', createdUserId: 'u1', createdAt: startOfYear.toISOString(),
-            title: 'Read 30 mins', category: 'Intellect', type: ResolutionType.BINARY, difficulty: 2, isPrivate: false,
-            peerDifficultyVotes: {}, effectiveDifficulty: 2, credibility: {},
-            history: generateHistoricalData('u1', 'r_alex_1', daysSinceStartOfYear, 0.6), // 60% consistency
-            currentStreak: 3, todayStatus: ResolutionStatus.UNCHECKED, isBroken: false, bets: [], subGoals: []
-        },
-        {
-            id: 'r_alex_2', createdUserId: 'u1', createdAt: new Date(Date.now() - 86400000 * 30).toISOString(), // Created 30 days ago
-            title: 'No Sugar', category: 'Health', type: ResolutionType.BINARY, difficulty: 5, isPrivate: false,
-            peerDifficultyVotes: {}, effectiveDifficulty: 5, credibility: {},
-            history: generateHistoricalData('u1', 'r_alex_2', 30, 0.4), // 40% consistency
-            currentStreak: 0, todayStatus: ResolutionStatus.UNCHECKED, isBroken: true, bets: [], subGoals: []
-        }
-    ];
-
-    // Force Yesterday Completion for Sarah (Daily Hero Logic)
-    const sarahRes = resolutions.find(r => r.id === 'r_sarah_1');
-    if (sarahRes) {
-        sarahRes.history[getYesterdayKey()] = ResolutionStatus.COMPLETED;
-    }
-
-    // 3. Groups
-    const groups: Group[] = [
-      { id: 'g1', name: 'Iron Circle', inviteCode: 'IRON24', memberIds: ['u1', 'u2'], creatorId: 'u1', dailyHeroId: undefined, lastHeroSelectionDate: '', weeklyComebackHeroId: undefined, lastComebackSelectionDate: '' }
-    ];
-
-    setStorage(KEYS.USERS, users);
-    setStorage(KEYS.RESOLUTIONS, resolutions);
-    setStorage(KEYS.GROUPS, groups);
-    
-    // Recalculate Initial Scores based on generated history using internal helper
-    recalculateScoresInternal(users, resolutions);
-};
-
-// Run initialization if needed
+// Initialize empty database if needed
 if (!localStorage.getItem(KEYS.INIT)) {
-    initializeDatabase();
-    localStorage.setItem(KEYS.INIT, 'true');
+    try {
+      // Initialize with empty arrays - no placeholder data
+      batchSetStorage([
+        { key: KEYS.USERS, value: [] },
+        { key: KEYS.RESOLUTIONS, value: [] },
+        { key: KEYS.GROUPS, value: [] },
+        { key: KEYS.FEED, value: [] },
+        { key: KEYS.CONFESSIONS, value: [] }
+      ]);
+      localStorage.setItem(KEYS.INIT, 'true');
+    } catch (e) {
+      console.error('Database initialization failed:', e);
+    }
 }
 
 // --- API Implementation ---
@@ -301,24 +451,61 @@ export const api = {
   
   // --- Core Data Access ---
 
-  _getResolutions: (): Resolution[] => getStorage(KEYS.RESOLUTIONS, []),
-  _getUsers: (): User[] => getStorage(KEYS.USERS, []),
-  _getGroups: (): Group[] => getStorage(KEYS.GROUPS, []),
+  _getResolutions: (): Resolution[] => {
+    const resolutions = getStorage<Resolution[]>(KEYS.RESOLUTIONS, []);
+    // Filter out invalid resolutions
+    return resolutions.filter(validateResolution);
+  },
+
+  _getUsers: (): User[] => {
+    const users = getStorage<User[]>(KEYS.USERS, []);
+    // Filter out invalid users
+    return users.filter(validateUser);
+  },
+
+  _getGroups: (): Group[] => {
+    const groups = getStorage<Group[]>(KEYS.GROUPS, []);
+    // Filter out invalid groups
+    return groups.filter(validateGroup);
+  },
 
   _recalculateAllScores: (users: User[], resolutions: Resolution[]) => {
-      recalculateScoresInternal(users, resolutions);
+      const { users: updatedUsers, resolutions: updatedResolutions } = recalculateScoresInternal(users, resolutions);
+      batchSetStorage([
+        { key: KEYS.USERS, value: updatedUsers },
+        { key: KEYS.RESOLUTIONS, value: updatedResolutions }
+      ]);
   },
 
   // --- Auth & User ---
 
-  isAuthenticated: (): boolean => !!localStorage.getItem(KEYS.SESSION),
-  getCurrentUserId: (): string | null => localStorage.getItem(KEYS.SESSION),
+  isAuthenticated: (): boolean => {
+    try {
+      return !!localStorage.getItem(KEYS.SESSION);
+    } catch {
+      return false;
+    }
+  },
+
+  getCurrentUserId: (): string | null => {
+    try {
+      return localStorage.getItem(KEYS.SESSION);
+    } catch {
+      return null;
+    }
+  },
   
   getUser: (): User => {
     const userId = api.getCurrentUserId();
+    if (!userId) throw new Error('Not authenticated');
+    
     const users = api._getUsers();
     const user = users.find(u => u.id === userId);
-    if (!user) throw new Error('Session invalid');
+    if (!user) {
+      // Clean up invalid session
+      localStorage.removeItem(KEYS.SESSION);
+      throw new Error('Session invalid');
+    }
     return user;
   },
 
@@ -327,45 +514,59 @@ export const api = {
   },
 
   login: (email: string, password?: string): boolean => {
-    const users = api._getUsers();
-    const user = users.find(u => u.email.toLowerCase() === email.toLowerCase());
-    if (user) {
-      localStorage.setItem(KEYS.SESSION, user.id);
-      return true;
+    try {
+      const users = api._getUsers();
+      const user = users.find(u => u.email.toLowerCase() === email.toLowerCase());
+      if (user) {
+        localStorage.setItem(KEYS.SESSION, user.id);
+        return true;
+      }
+      return false;
+    } catch (e) {
+      console.error('Login error:', e);
+      return false;
     }
-    return false;
   },
 
   signup: (name: string, email: string, password?: string): boolean => {
-    const users = api._getUsers();
-    if (users.find(u => u.email.toLowerCase() === email.toLowerCase())) return false;
+    try {
+      const users = api._getUsers();
+      if (users.find(u => u.email.toLowerCase() === email.toLowerCase())) return false;
 
-    const newUser: User = {
-      id: 'u' + Date.now(),
-      name,
-      email,
-      password,
-      avatarInitials: name.substring(0, 2).toUpperCase(),
-      score: 0,
-      monthlyScore: 0,
-      streak: 0,
-      rank: users.length + 1,
-      rankChange: 'same',
-      groupId: undefined,
-      honestyScore: 100,
-      isDailyHero: false,
-      badges: [],
-      seasonalLabel: 'Consistent Starter'
-    };
+      const newUser: User = {
+        id: generateId('u'),
+        name,
+        email,
+        password,
+        avatarInitials: name.substring(0, 2).toUpperCase(),
+        score: 0,
+        monthlyScore: 0,
+        streak: 0,
+        rank: users.length + 1,
+        rankChange: 'same',
+        groupId: undefined,
+        honestyScore: 100,
+        isDailyHero: false,
+        badges: [],
+        seasonalLabel: 'Consistent Starter'
+      };
 
-    users.push(newUser);
-    setStorage(KEYS.USERS, users);
-    localStorage.setItem(KEYS.SESSION, newUser.id);
-    return true;
+      const updatedUsers = [...users, newUser];
+      setStorage(KEYS.USERS, updatedUsers);
+      localStorage.setItem(KEYS.SESSION, newUser.id);
+      return true;
+    } catch (e) {
+      console.error('Signup error:', e);
+      return false;
+    }
   },
 
   logout: () => {
-    localStorage.removeItem(KEYS.SESSION);
+    try {
+      localStorage.removeItem(KEYS.SESSION);
+    } catch (e) {
+      console.error('Logout error:', e);
+    }
   },
 
   // --- Group Logic ---
@@ -375,23 +576,33 @@ export const api = {
     if (user.groupId) throw new Error("User already in a group");
 
     const newGroup: Group = {
-      id: 'g' + Date.now(),
+      id: generateId('g'),
       name,
       inviteCode: Math.random().toString(36).substring(2, 8).toUpperCase(),
       creatorId: user.id,
-      memberIds: [user.id]
+      memberIds: [user.id],
+      dailyHeroId: undefined,
+      lastHeroSelectionDate: '',
+      weeklyComebackHeroId: undefined,
+      lastComebackSelectionDate: ''
     };
 
     const groups = api._getGroups();
-    groups.push(newGroup);
-    setStorage(KEYS.GROUPS, groups);
-
     const users = api._getUsers();
     const userIndex = users.findIndex(u => u.id === user.id);
-    if (userIndex >= 0) {
-      users[userIndex].groupId = newGroup.id;
-      setStorage(KEYS.USERS, users);
-    }
+    
+    if (userIndex === -1) throw new Error("User not found");
+
+    // Use batch write for atomic update
+    const updatedGroups = [...groups, newGroup];
+    const updatedUsers = [...users];
+    updatedUsers[userIndex] = { ...updatedUsers[userIndex], groupId: newGroup.id };
+
+    batchSetStorage([
+      { key: KEYS.GROUPS, value: updatedGroups },
+      { key: KEYS.USERS, value: updatedUsers }
+    ]);
+
     return newGroup;
   },
 
@@ -405,35 +616,46 @@ export const api = {
 
     const group = groups[groupIndex];
     if (!group.memberIds.includes(user.id)) {
-      group.memberIds.push(user.id);
-      groups[groupIndex] = group;
-      setStorage(KEYS.GROUPS, groups);
+      const users = api._getUsers();
+      const userIndex = users.findIndex(u => u.id === user.id);
+      
+      if (userIndex === -1) throw new Error("User not found");
+
+      const updatedGroups = [...groups];
+      updatedGroups[groupIndex] = { ...group, memberIds: [...group.memberIds, user.id] };
+      
+      const updatedUsers = [...users];
+      updatedUsers[userIndex] = { ...updatedUsers[userIndex], groupId: group.id };
+
+      batchSetStorage([
+        { key: KEYS.GROUPS, value: updatedGroups },
+        { key: KEYS.USERS, value: updatedUsers }
+      ]);
+
+      return updatedGroups[groupIndex];
     }
 
-    const users = api._getUsers();
-    const userIndex = users.findIndex(u => u.id === user.id);
-    if (userIndex >= 0) {
-      users[userIndex].groupId = group.id;
-      setStorage(KEYS.USERS, users);
-    }
     return group;
   },
 
   getGroup: (): Group | null => {
-    const user = api.getUser();
-    if (!user.groupId) return null;
-    
-    const groups = api._getGroups();
-    let group = groups.find(g => g.id === user.groupId) || null;
-    
-    // Check for Daily Hero Refresh on Read
-    if (group) {
-        const today = getTodayKey();
-        if (group.lastHeroSelectionDate !== today) {
-            return api._refreshDailyHero(group);
-        }
+    try {
+      const user = api.getUser();
+      if (!user.groupId) return null;
+      
+      const groups = api._getGroups();
+      let group = groups.find(g => g.id === user.groupId) || null;
+      
+      if (group) {
+          const today = getTodayKey();
+          if (group.lastHeroSelectionDate !== today) {
+              return api._refreshDailyHero(group);
+          }
+      }
+      return group;
+    } catch {
+      return null;
     }
-    return group;
   },
 
   _refreshDailyHero: (group: Group): Group => {
@@ -476,26 +698,30 @@ export const api = {
       const groups = api._getGroups();
       const gIndex = groups.findIndex(g => g.id === group.id);
       
-      if (gIndex !== -1) {
-          groups[gIndex].dailyHeroId = bestCandidate ? bestCandidate.id : undefined;
-          groups[gIndex].lastHeroSelectionDate = today;
-          setStorage(KEYS.GROUPS, groups);
-      }
+      if (gIndex === -1) return group;
 
-      // Reset old hero status, set new
+      const updatedGroups = [...groups];
+      updatedGroups[gIndex] = {
+        ...updatedGroups[gIndex],
+        dailyHeroId: bestCandidate ? bestCandidate.id : undefined,
+        lastHeroSelectionDate: today
+      };
+
       const updatedUsers = allUsers.map(u => {
           if (u.groupId !== group.id) return u;
-          let isHero = false;
-          if (bestCandidate && u.id === bestCandidate.id) isHero = true;
-          return { ...u, isDailyHero: isHero };
+          return { ...u, isDailyHero: bestCandidate ? u.id === bestCandidate.id : false };
       });
-      setStorage(KEYS.USERS, updatedUsers);
+
+      batchSetStorage([
+        { key: KEYS.GROUPS, value: updatedGroups },
+        { key: KEYS.USERS, value: updatedUsers }
+      ]);
       
       if (bestCandidate) {
           api._addToFeed('hero', `👑 ${bestCandidate.name} is today's Daily Hero!`, bestCandidate);
       }
 
-      return groups[gIndex];
+      return updatedGroups[gIndex];
   },
 
   // --- Feed & Social ---
@@ -508,7 +734,7 @@ export const api = {
   _addToFeed: (type: FeedEvent['type'], message: string, user: User) => {
       const feed = getStorage<FeedEvent[]>(KEYS.FEED, []);
       const newEvent: FeedEvent = {
-          id: Date.now().toString() + Math.random(),
+          id: generateId('feed'),
           type,
           message,
           timestamp: new Date().toISOString(),
@@ -525,7 +751,7 @@ export const api = {
       
       const all = getStorage<Confession[]>(KEYS.CONFESSIONS, []);
       const newConfession: Confession = {
-          id: 'c' + Date.now(),
+          id: generateId('c'),
           groupId: user.groupId,
           text,
           timestamp: new Date().toISOString()
@@ -534,31 +760,33 @@ export const api = {
   },
 
   getConfessions: (): Confession[] => {
-      const user = api.getUser();
-      if (!user.groupId) return [];
-      const all = getStorage<Confession[]>(KEYS.CONFESSIONS, []);
-      return all
-          .filter(c => c.groupId === user.groupId)
-          .sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
+      try {
+        const user = api.getUser();
+        if (!user.groupId) return [];
+        const all = getStorage<Confession[]>(KEYS.CONFESSIONS, []);
+        return all
+            .filter(c => c.groupId === user.groupId)
+            .sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
+      } catch {
+        return [];
+      }
   },
 
   // --- Resolutions ---
 
   getMyResolutions: (): Resolution[] => {
       const userId = api.getCurrentUserId();
+      if (!userId) return [];
+      
       const all = api._getResolutions();
       const todayKey = getTodayKey();
       
-      // Filter & Process on read
-      const myRes = all.filter(r => r.createdUserId === userId && !r.archivedAt).map(res => {
-          // Ensure today status matches history
+      return all.filter(r => r.createdUserId === userId && !r.archivedAt).map(res => {
           if (res.history[todayKey] && res.history[todayKey] !== res.todayStatus) {
               return { ...res, todayStatus: res.history[todayKey] };
           }
           return res;
       });
-      
-      return myRes;
   },
   
   getPublicResolutions: (userId: string): Resolution[] => {
@@ -578,34 +806,39 @@ export const api = {
   
   getGraveyard: (): Resolution[] => {
       const userId = api.getCurrentUserId();
+      if (!userId) return [];
       return api._getResolutions()
         .filter(r => r.createdUserId === userId && r.archivedAt)
-        .sort((a,b) => b.archivedAt!.localeCompare(a.archivedAt!));
+        .sort((a,b) => (b.archivedAt || '').localeCompare(a.archivedAt || ''));
   },
 
   getPublicResolutionsForGroup: (): { user: User, resolutions: Resolution[] }[] => {
-      const currentUser = api.getUser();
-      if (!currentUser.groupId) return [];
-      
-      const allResolutions = api._getResolutions();
-      const allUsers = api._getUsers();
-      const groupMembers = allUsers.filter(u => u.groupId === currentUser.groupId);
-      
-      return groupMembers.map(member => {
-          const memberResolutions = allResolutions.filter(r => 
-              r.createdUserId === member.id && 
-              !r.isPrivate &&
-              !r.archivedAt
-          );
-          return { user: member, resolutions: memberResolutions };
-      }).filter(group => group.resolutions.length > 0);
+      try {
+        const currentUser = api.getUser();
+        if (!currentUser.groupId) return [];
+        
+        const allResolutions = api._getResolutions();
+        const allUsers = api._getUsers();
+        const groupMembers = allUsers.filter(u => u.groupId === currentUser.groupId);
+        
+        return groupMembers.map(member => {
+            const memberResolutions = allResolutions.filter(r => 
+                r.createdUserId === member.id && 
+                !r.isPrivate &&
+                !r.archivedAt
+            );
+            return { user: member, resolutions: memberResolutions };
+        }).filter(group => group.resolutions.length > 0);
+      } catch {
+        return [];
+      }
   },
 
   addResolution: (res: any) => {
     const user = api.getUser();
     const newRes: Resolution = {
         ...res,
-        id: Date.now().toString(),
+        id: generateId('r'),
         createdUserId: user.id,
         createdAt: new Date().toISOString(),
         currentStreak: 0,
@@ -628,24 +861,20 @@ export const api = {
       const index = all.findIndex(r => r.id === id);
       if (index === -1) throw new Error("Resolution not found");
 
-      let res = all[index];
       const user = api.getUser();
       const todayKey = getTodayKey();
       
-      // Update DB
+      // Create updated resolution copy
+      const res = { ...all[index] };
+      res.history = { ...res.history };
       res.history[todayKey] = status;
       res.todayStatus = status;
       
-      // Recalc Streak
       const oldStreak = res.currentStreak;
       res.currentStreak = calculateStreak(res.history, status);
-      
       res.isBroken = status === ResolutionStatus.MISSED;
       
-      // Comeback Logic (Step 2K)
       if (status === ResolutionStatus.COMPLETED && res.currentStreak === 5) {
-          // Check for 3+ misses in 7 days prior to streak start
-          // Streak start date approx: today - 4 days
           const streakStart = new Date();
           streakStart.setDate(streakStart.getDate() - 4);
           
@@ -660,12 +889,10 @@ export const api = {
           }
           
           if (misses >= 3) {
-              // Trigger Comeback Highlight Candidate
               api._handleComebackEvent(user);
           }
       }
       
-      // Feed
       if (!res.isPrivate) {
           if (status === ResolutionStatus.COMPLETED) {
               const points = Math.round(res.effectiveDifficulty);
@@ -677,11 +904,12 @@ export const api = {
           }
       }
 
-      all[index] = res;
-      setStorage(KEYS.RESOLUTIONS, all);
+      const updatedResolutions = [...all];
+      updatedResolutions[index] = res;
+      setStorage(KEYS.RESOLUTIONS, updatedResolutions);
       
       // Recalc User Stats
-      api._recalculateAllScores(api._getUsers(), all);
+      api._recalculateAllScores(api._getUsers(), updatedResolutions);
       
       // Check Badges
       api._checkBadges(user.id);
@@ -697,12 +925,15 @@ export const api = {
       const group = groups[gIndex];
       const weekStart = getStartOfWeek().toISOString().split('T')[0];
       
-      // Only one comeback highlight per week per group
       if (group.lastComebackSelectionDate !== weekStart) {
-          group.lastComebackSelectionDate = weekStart;
-          group.weeklyComebackHeroId = user.id;
-          groups[gIndex] = group;
-          setStorage(KEYS.GROUPS, groups);
+          const updatedGroups = [...groups];
+          updatedGroups[gIndex] = {
+            ...updatedGroups[gIndex],
+            lastComebackSelectionDate: weekStart,
+            weeklyComebackHeroId: user.id
+          };
+          
+          setStorage(KEYS.GROUPS, updatedGroups);
           
           api._addToFeed('comeback', `🔥 COMEBACK OF THE WEEK: ${user.name} bounced back with a 5-day streak!`, user);
           api._awardBadge(user.id, 'Comeback Kid');
@@ -717,11 +948,11 @@ export const api = {
       const index = all.findIndex(r => r.id === resolutionId);
       if (index === -1) throw new Error("Resolution not found");
 
-      const res = all[index];
+      const res = { ...all[index] };
       const today = getTodayKey();
 
       const newBet: Bet = {
-          id: 'b' + Date.now(),
+          id: generateId('b'),
           resolutionId,
           userId: user.id,
           createdAt: new Date().toISOString(),
@@ -732,9 +963,11 @@ export const api = {
       };
 
       if (!res.bets) res.bets = [];
-      res.bets.push(newBet);
-      all[index] = res;
-      setStorage(KEYS.RESOLUTIONS, all);
+      res.bets = [...res.bets, newBet];
+      
+      const updatedResolutions = [...all];
+      updatedResolutions[index] = res;
+      setStorage(KEYS.RESOLUTIONS, updatedResolutions);
       
       if (!res.isPrivate) {
           api._addToFeed('system', `${user.name} placed a bet on "${res.title}" until ${endDate}. Stakes: ${stake}`, user);
@@ -746,13 +979,15 @@ export const api = {
       const index = all.findIndex(r => r.id === id);
       if (index === -1) throw new Error("Resolution not found");
       
-      const res = all[index];
+      const res = { ...all[index] };
       if (getDaysSince(res.createdAt) < 7) throw new Error("Cannot archive during 7-day lock-in.");
       
       res.archivedAt = new Date().toISOString();
       res.archivedReason = reason;
-      all[index] = res;
-      setStorage(KEYS.RESOLUTIONS, all);
+      
+      const updatedResolutions = [...all];
+      updatedResolutions[index] = res;
+      setStorage(KEYS.RESOLUTIONS, updatedResolutions);
   },
 
   voteDifficulty: (resolutionId: string, vote: Difficulty) => {
@@ -761,12 +996,12 @@ export const api = {
       const index = all.findIndex(r => r.id === resolutionId);
       if (index === -1) throw new Error("Resolution not found");
       
-      const res = all[index];
+      const res = { ...all[index] };
       if (res.createdUserId === currentUser.id) throw new Error("Cannot vote on own resolution");
       if (res.isPrivate) throw new Error("Cannot vote on private resolution");
 
       if (!res.peerDifficultyVotes) res.peerDifficultyVotes = {};
-      res.peerDifficultyVotes[currentUser.id] = vote;
+      res.peerDifficultyVotes = { ...res.peerDifficultyVotes, [currentUser.id]: vote };
 
       const votes = Object.values(res.peerDifficultyVotes);
       const sumVotes = votes.reduce((a, b) => a + b, 0);
@@ -775,9 +1010,10 @@ export const api = {
       const effective = (res.difficulty + avgVotes) / 2;
       res.effectiveDifficulty = Math.round(effective * 10) / 10; 
 
-      all[index] = res;
-      setStorage(KEYS.RESOLUTIONS, all);
-      api._recalculateAllScores(api._getUsers(), all);
+      const updatedResolutions = [...all];
+      updatedResolutions[index] = res;
+      setStorage(KEYS.RESOLUTIONS, updatedResolutions);
+      api._recalculateAllScores(api._getUsers(), updatedResolutions);
   },
 
   voteCredibility: (resolutionId: string, date: string, type: 'BELIEVE' | 'DOUBT') => {
@@ -786,32 +1022,36 @@ export const api = {
       const index = all.findIndex(r => r.id === resolutionId);
       if (index === -1) throw new Error("Resolution not found");
 
-      const res = all[index];
+      const res = { ...all[index] };
       if (res.createdUserId === currentUser.id) throw new Error("Cannot vote on own credibility");
 
       if (!res.credibility) res.credibility = {};
-      if (!res.credibility[date]) res.credibility[date] = { believers: [], doubters: [] };
+      if (!res.credibility[date]) {
+        res.credibility = { ...res.credibility, [date]: { believers: [], doubters: [] } };
+      }
 
-      const dayVotes = res.credibility[date];
+      const dayVotes = { ...res.credibility[date] };
       dayVotes.believers = dayVotes.believers.filter(id => id !== currentUser.id);
       dayVotes.doubters = dayVotes.doubters.filter(id => id !== currentUser.id);
 
-      if (type === 'BELIEVE') dayVotes.believers.push(currentUser.id);
-      if (type === 'DOUBT') dayVotes.doubters.push(currentUser.id);
+      if (type === 'BELIEVE') dayVotes.believers = [...dayVotes.believers, currentUser.id];
+      if (type === 'DOUBT') dayVotes.doubters = [...dayVotes.doubters, currentUser.id];
 
-      res.credibility[date] = dayVotes;
-      all[index] = res;
-      setStorage(KEYS.RESOLUTIONS, all);
+      res.credibility = { ...res.credibility, [date]: dayVotes };
+      
+      const updatedResolutions = [...all];
+      updatedResolutions[index] = res;
+      setStorage(KEYS.RESOLUTIONS, updatedResolutions);
   },
 
-  // --- Reports & Analytics (Real Calculations) ---
+  // --- Reports & Analytics ---
 
   getScoreBreakdown: (userId: string): { title: string, points: number, days: number, difficulty: number }[] => {
       const allResolutions = api._getResolutions();
       const userResolutions = allResolutions.filter(r => r.createdUserId === userId && !r.isPrivate && !r.archivedAt);
       
       return userResolutions.map(r => {
-          const completedDays = Object.values(r.history).filter(status => status === ResolutionStatus.COMPLETED).length;
+          const completedDays = Object.values(r.history).filter(s => s === ResolutionStatus.COMPLETED).length;
           const diff = r.effectiveDifficulty || r.difficulty;
           return {
               title: r.title,
@@ -829,7 +1069,6 @@ export const api = {
       const allUsers = api._getUsers();
       let groupMembers = allUsers.filter(u => u.groupId === currentUser.groupId);
       
-      // Sort logic
       groupMembers.sort((a, b) => {
           const scoreA = period === 'MONTHLY' ? a.monthlyScore : a.score;
           const scoreB = period === 'MONTHLY' ? b.monthlyScore : b.score;
@@ -838,22 +1077,18 @@ export const api = {
           return b.streak - a.streak;
       });
       
-      // Reassign Ranks (Local display rank, does not persist to DB if monthly view)
       const updatedMembers = groupMembers.map((member, index) => {
           const newRank = index + 1;
           let rankChange: 'up' | 'down' | 'same' = 'same';
           
-          // Only compare rank change for All Time view for consistency
           if (period === 'ALL' && member.rank !== 0) {
               if (newRank < member.rank) rankChange = 'up';
               else if (newRank > member.rank) rankChange = 'down';
           }
           
-          // Clone to avoid mutation of source if just viewing
           return { ...member, rank: newRank, rankChange };
       });
 
-      // Only persist ALL time ranks
       if (period === 'ALL') {
           const userMap = new Map(updatedMembers.map(u => [u.id, u]));
           const newAllUsers = allUsers.map(u => userMap.get(u.id) || u);
@@ -882,9 +1117,8 @@ export const api = {
       let worstRate = 101;
 
       userResolutions.forEach(res => {
-          // Check if resolution was active during this period
           const createdAt = new Date(res.createdAt);
-          if (createdAt > endDate) return; // Created after period
+          if (createdAt > endDate) return;
 
           let periodCompleted = 0;
           let periodOpportunities = 0;
@@ -918,19 +1152,15 @@ export const api = {
           ? Math.round((consistencySum / activeResolutionsCount) * 100) 
           : 0;
 
-      // Group Stats
       const allUsers = api._getUsers();
       const groupMembers = allUsers.filter(u => u.groupId === user.groupId);
       
-      // Calculate Group Consistency
       let groupConsSum = 0;
       let groupActiveCount = 0;
 
       groupMembers.forEach(mem => {
           const memRes = allResolutions.filter(r => r.createdUserId === mem.id);
           memRes.forEach(r => {
-             // Simplified calculation for group aggregation to save cycles
-             // Using total history intersection with period
              const createdAt = new Date(r.createdAt);
              if (createdAt > endDate) return;
              
@@ -963,7 +1193,7 @@ export const api = {
           bestResolution: bestRes ? bestRes.title : 'None',
           worstResolution: worstRes ? worstRes.title : 'None',
           trustTrend: user.honestyScore >= 95 ? 'up' : user.honestyScore < 80 ? 'down' : 'stable',
-          groupHero: sortedGroup[0].name,
+          groupHero: sortedGroup[0]?.name || 'None',
           groupConsistency
       };
   },
@@ -1090,7 +1320,7 @@ export const api = {
   },
 
   _ensureDemoIntegrity: () => {
-      // Intentionally left empty as the initialization logic handles this now
+      // Intentionally left empty
   },
 
   _checkBadges: (userId: string): string[] => {
@@ -1100,17 +1330,14 @@ export const api = {
       const allRes = api._getResolutions();
       const myRes = allRes.filter(r => r.createdUserId === userId);
 
-      // 7-Day Streak Badge
       if (myRes.some(r => r.currentStreak >= 7)) {
           if (!userBadges.has('7-Day Streak')) api._awardBadge(userId, '7-Day Streak');
       }
 
-      // 30-Day Streak Badge
       if (myRes.some(r => r.currentStreak >= 30)) {
            if (!userBadges.has('30-Day Streak')) api._awardBadge(userId, '30-Day Streak');
       }
 
-      // Locked In Badge (Completed 7 day lock-in on any resolution)
       if (myRes.some(r => getDaysSince(r.createdAt) >= 7 && !r.archivedAt)) {
           if (!userBadges.has('Locked In')) api._awardBadge(userId, 'Locked In');
       }
@@ -1122,10 +1349,14 @@ export const api = {
       const allUsers = api._getUsers();
       const idx = allUsers.findIndex(u => u.id === userId);
       if (idx !== -1) {
-          if (!allUsers[idx].badges) allUsers[idx].badges = [];
-          if (!allUsers[idx].badges.includes(badgeName)) {
-              allUsers[idx].badges.push(badgeName);
-              setStorage(KEYS.USERS, allUsers);
+          const updatedUsers = [...allUsers];
+          if (!updatedUsers[idx].badges) updatedUsers[idx].badges = [];
+          if (!updatedUsers[idx].badges.includes(badgeName)) {
+              updatedUsers[idx] = {
+                ...updatedUsers[idx],
+                badges: [...updatedUsers[idx].badges, badgeName]
+              };
+              setStorage(KEYS.USERS, updatedUsers);
           }
       }
   },
