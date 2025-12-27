@@ -14,20 +14,27 @@ const GroupEntry: React.FC = () => {
   const [inviteCode, setInviteCode] = useState('');
   const [error, setError] = useState('');
 
-  // Auto-fill invite code from URL if present
+  // Auto-fill invite code from URL if present and auto-join
   useEffect(() => {
     if (urlInviteCode) {
       setInviteCode(urlInviteCode);
-      // Auto-submit if code is in URL
+      // Auto-submit if code is in URL (give it a moment for component to mount)
       const timer = setTimeout(() => {
         setError('');
         try {
+          // Check if user already has a group
+          const user = api.getUser();
+          if (user.groupId) {
+            setError('You are already in a group. Leave your current group first to join another.');
+            return;
+          }
+          
           api.joinGroup(urlInviteCode);
-          navigate('/');
+          navigate('/', { replace: true });
         } catch (err: any) {
           setError(err.message || 'Failed to join group');
         }
-      }, 100);
+      }, 300);
       return () => clearTimeout(timer);
     }
   }, [urlInviteCode, navigate]);

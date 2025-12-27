@@ -15,7 +15,6 @@ const Profile: React.FC = () => {
   const [breakdown, setBreakdown] = useState<{ title: string, points: number, days: number, difficulty: number }[]>([]);
   const [loading, setLoading] = useState(true);
   const [groupMembers, setGroupMembers] = useState<User[]>([]);
-  const [copied, setCopied] = useState<'code' | 'link' | null>(null);
 
   // Derivations
   const currentUser = api.getUser();
@@ -39,7 +38,7 @@ const Profile: React.FC = () => {
               setPublicResolutions(api.getPublicResolutions(targetUser.id));
           }
           
-          // Load group members if viewing own profile
+          // Load group members if viewing own profile and user is admin
           if (isOwnProfile && group) {
               const members = group.memberIds
                   .map(id => api.getUserById(id))
@@ -51,7 +50,7 @@ const Profile: React.FC = () => {
           navigate('/profile');
       }
       setLoading(false);
-  }, [userId, group]);
+  }, [userId, group, isOwnProfile]);
 
   const handleLogout = () => {
       api.logout();
@@ -61,8 +60,6 @@ const Profile: React.FC = () => {
   const copyInviteCode = async () => {
     if (group?.inviteCode) {
         await navigator.clipboard.writeText(group.inviteCode);
-        setCopied('code');
-        setTimeout(() => setCopied(null), 2000);
     }
   };
 
@@ -70,8 +67,6 @@ const Profile: React.FC = () => {
     try {
         const link = api.getInviteLink();
         await navigator.clipboard.writeText(link);
-        setCopied('link');
-        setTimeout(() => setCopied(null), 2000);
     } catch (e: any) {
         console.error('Failed to copy invite link:', e);
     }
@@ -84,9 +79,10 @@ const Profile: React.FC = () => {
     
     try {
         api.removeMember(memberId);
-        // Refresh group members
-        if (group) {
-            const members = group.memberIds
+        // Refresh group and members
+        const updatedGroup = api.getGroup();
+        if (updatedGroup) {
+            const members = updatedGroup.memberIds
                 .map(id => api.getUserById(id))
                 .filter((u): u is User => u !== undefined);
             setGroupMembers(members);
@@ -209,7 +205,7 @@ const Profile: React.FC = () => {
             {group && (
                 <div className="bg-slate-900 rounded-[2rem] p-8 text-white shadow-xl shadow-slate-200 relative overflow-hidden">
                     <div className="absolute top-0 right-0 w-64 h-64 bg-violet-600 rounded-full blur-[100px] opacity-40 -mr-16 -mt-16 pointer-events-none"></div>
-                    <div className="relative z-10 space-y-4">
+                    <div className="relative z-10">
                         <div className="flex justify-between items-start mb-6">
                                 <div>
                                     <div className="flex items-center gap-2 text-violet-200 mb-1">
@@ -220,8 +216,9 @@ const Profile: React.FC = () => {
                                 </div>
                         </div>
                         
-                        {/* Invite Code */}
-                        <div className="bg-white/10 p-4 rounded-xl flex items-center justify-between border border-white/10">
+                        <div className="space-y-3">
+                            {/* Invite Code */}
+                            <div className="bg-white/10 p-4 rounded-xl flex items-center justify-between border border-white/10">
                                 <div>
                                     <p className="text-xs text-violet-200 font-bold uppercase tracking-wider mb-1">Invite Code</p>
                                     <p className="text-2xl font-mono font-bold tracking-widest">{group.inviteCode}</p>
@@ -230,22 +227,25 @@ const Profile: React.FC = () => {
                                     onClick={copyInviteCode}
                                     className="p-3 bg-white text-slate-900 rounded-lg hover:bg-violet-100 transition-colors font-bold flex items-center gap-2"
                                 >
-                                    <Copy size={18} /> {copied === 'code' ? 'Copied!' : 'Copy'}
+                                    <Copy size={18} /> Copy
                                 </button>
-                        </div>
+                            </div>
 
-                        {/* Invite Link */}
-                        <div className="bg-white/10 p-4 rounded-xl flex items-center justify-between border border-white/10">
-                                <div className="flex-1 min-w-0">
+                            {/* Invite Link */}
+                            <div className="bg-white/10 p-4 rounded-xl flex items-center justify-between border border-white/10">
+                                <div className="flex-1 min-w-0 mr-3">
                                     <p className="text-xs text-violet-200 font-bold uppercase tracking-wider mb-1">Invite Link</p>
-                                    <p className="text-sm font-mono truncate">{api.getInviteLink()}</p>
+                                    <p className="text-sm font-mono truncate" title={api.getInviteLink()}>
+                                        {api.getInviteLink()}
+                                    </p>
                                 </div>
                                 <button 
                                     onClick={copyInviteLink}
-                                    className="p-3 bg-white text-slate-900 rounded-lg hover:bg-violet-100 transition-colors font-bold flex items-center gap-2 ml-2 flex-shrink-0"
+                                    className="p-3 bg-white text-slate-900 rounded-lg hover:bg-violet-100 transition-colors font-bold flex items-center gap-2 flex-shrink-0"
                                 >
-                                    <LinkIcon size={18} /> {copied === 'link' ? 'Copied!' : 'Copy'}
+                                    <LinkIcon size={18} /> Copy
                                 </button>
+                            </div>
                         </div>
 
                         {/* Group Members (Admin View) */}

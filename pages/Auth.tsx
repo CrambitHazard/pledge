@@ -1,6 +1,6 @@
 
 import React, { useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useLocation } from 'react-router-dom';
 import Button from '../components/Button';
 import Input from '../components/Input';
 import Logo from '../components/Logo';
@@ -8,6 +8,7 @@ import { api } from '../services/mockService';
 
 const Auth: React.FC = () => {
   const navigate = useNavigate();
+  const location = useLocation();
   const [isLogin, setIsLogin] = useState(true);
   
   // Form State
@@ -16,6 +17,9 @@ const Auth: React.FC = () => {
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
 
+  // Get invite code from location state (if coming from invite link)
+  const inviteCode = (location.state as any)?.inviteCode;
+
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     setError('');
@@ -23,7 +27,12 @@ const Auth: React.FC = () => {
     if (isLogin) {
       const success = api.login(email, password);
       if (success) {
-        navigate('/', { replace: true });
+        // If there's an invite code, redirect to join page, otherwise go to dashboard
+        if (inviteCode) {
+          navigate(`/join/${inviteCode}`, { replace: true });
+        } else {
+          navigate('/', { replace: true });
+        }
       } else {
         setError('Invalid credentials');
       }
@@ -34,7 +43,12 @@ const Auth: React.FC = () => {
       }
       const success = api.signup(name, email, password);
       if (success) {
-        navigate('/', { replace: true });
+        // If there's an invite code, redirect to join page, otherwise go to dashboard
+        if (inviteCode) {
+          navigate(`/join/${inviteCode}`, { replace: true });
+        } else {
+          navigate('/', { replace: true });
+        }
       } else {
         setError('Email already exists');
       }

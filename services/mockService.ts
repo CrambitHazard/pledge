@@ -474,8 +474,28 @@ export const api = {
 
   _getGroups: (): Group[] => {
     const groups = getStorage<Group[]>(KEYS.GROUPS, []);
-    // Filter out invalid groups
-    return groups.filter(validateGroup);
+    // Filter out invalid groups and ensure adminIds exists
+    const validGroups = groups.filter(validateGroup);
+    
+    // Ensure all groups have adminIds initialized
+    let needsSave = false;
+    const updatedGroups = validGroups.map(group => {
+      if (!group.adminIds || !Array.isArray(group.adminIds)) {
+        needsSave = true;
+        return { ...group, adminIds: [group.creatorId] };
+      }
+      if (!group.adminIds.includes(group.creatorId)) {
+        needsSave = true;
+        return { ...group, adminIds: [...group.adminIds, group.creatorId] };
+      }
+      return group;
+    });
+    
+    if (needsSave) {
+      setStorage(KEYS.GROUPS, updatedGroups);
+    }
+    
+    return needsSave ? updatedGroups : validGroups;
   },
 
   _recalculateAllScores: (users: User[], resolutions: Resolution[]) => {
@@ -751,6 +771,17 @@ export const api = {
       let group = groups.find(g => g.id === user.groupId) || null;
       
       if (group) {
+          // Ensure adminIds exists
+          if (!group.adminIds || !Array.isArray(group.adminIds)) {
+              group = { ...group, adminIds: [group.creatorId] };
+              const updatedGroups = groups.map(g => g.id === group!.id ? group! : g);
+              setStorage(KEYS.GROUPS, updatedGroups);
+          } else if (!group.adminIds.includes(group.creatorId)) {
+              group = { ...group, adminIds: [...group.adminIds, group.creatorId] };
+              const updatedGroups = groups.map(g => g.id === group!.id ? group! : g);
+              setStorage(KEYS.GROUPS, updatedGroups);
+          }
+          
           const today = getTodayKey();
           if (group.lastHeroSelectionDate !== today) {
               return api._refreshDailyHero(group);

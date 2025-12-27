@@ -20,7 +20,10 @@ const ProtectedRoute = ({ children }: { children?: React.ReactNode }) => {
   const location = useLocation();
 
   if (!isAuth) {
-    return <Navigate to="/auth" replace state={{ from: location }} />;
+    // Preserve invite link in state so user can join after login
+    const inviteCodeMatch = location.pathname.match(/^\/join\/(.+)$/);
+    const inviteCode = inviteCodeMatch ? inviteCodeMatch[1] : null;
+    return <Navigate to="/auth" replace state={{ from: location, inviteCode }} />;
   }
   
   // Check if user has a group
@@ -32,11 +35,19 @@ const ProtectedRoute = ({ children }: { children?: React.ReactNode }) => {
       return <Navigate to="/auth" replace />;
   }
 
-  if (!user.groupId && location.pathname !== '/group-entry') {
+  // Allow access to group-entry and join routes even without a group
+  const isGroupEntryRoute = location.pathname === '/group-entry' || location.pathname.startsWith('/join/');
+
+  if (!user.groupId && !isGroupEntryRoute) {
       return <Navigate to="/group-entry" replace />;
   }
 
   if (user.groupId && location.pathname === '/group-entry') {
+      return <Navigate to="/" replace />;
+  }
+
+  // If user has a group and tries to join another, redirect to home
+  if (user.groupId && location.pathname.startsWith('/join/')) {
       return <Navigate to="/" replace />;
   }
 
