@@ -54,6 +54,7 @@ export interface Group {
   inviteCode: string;
   memberIds: string[];
   creatorId: string;
+  adminIds: string[]; // Array of admin user IDs (creator is always admin)
   
   // Hero Tracking
   dailyHeroId?: string;

@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { api } from '../services/mockService';
-import { Award, Target, LogOut, Copy, Users, FileText, ArrowRight, Calendar, Archive, Medal, Tag, ArrowLeft, Globe, Flame, CheckSquare } from 'lucide-react';
+import { Award, Target, LogOut, Copy, Users, FileText, ArrowRight, Calendar, Archive, Medal, Tag, ArrowLeft, Globe, Flame, CheckSquare, Link as LinkIcon, X, Shield } from 'lucide-react';
 import Button from '../components/Button';
 import { useNavigate, useParams } from 'react-router-dom';
 import { User, Resolution } from '../types';
@@ -14,11 +14,14 @@ const Profile: React.FC = () => {
   const [publicResolutions, setPublicResolutions] = useState<Resolution[]>([]);
   const [breakdown, setBreakdown] = useState<{ title: string, points: number, days: number, difficulty: number }[]>([]);
   const [loading, setLoading] = useState(true);
+  const [groupMembers, setGroupMembers] = useState<User[]>([]);
+  const [copied, setCopied] = useState<'code' | 'link' | null>(null);
 
   // Derivations
   const currentUser = api.getUser();
   const isOwnProfile = !userId || userId === currentUser.id;
   const group = api.getGroup();
+  const isAdmin = api.isGroupAdmin();
 
   useEffect(() => {
       let targetUser: User | undefined;
@@ -35,21 +38,61 @@ const Profile: React.FC = () => {
           if (!isOwnProfile) {
               setPublicResolutions(api.getPublicResolutions(targetUser.id));
           }
+          
+          // Load group members if viewing own profile
+          if (isOwnProfile && group) {
+              const members = group.memberIds
+                  .map(id => api.getUserById(id))
+                  .filter((u): u is User => u !== undefined);
+              setGroupMembers(members);
+          }
       } else {
           // If user not found, redirect to own profile or dashboard
           navigate('/profile');
       }
       setLoading(false);
-  }, [userId]);
+  }, [userId, group]);
 
   const handleLogout = () => {
       api.logout();
       navigate('/auth', { replace: true });
   };
 
-  const copyInvite = () => {
+  const copyInviteCode = async () => {
     if (group?.inviteCode) {
-        navigator.clipboard.writeText(group.inviteCode);
+        await navigator.clipboard.writeText(group.inviteCode);
+        setCopied('code');
+        setTimeout(() => setCopied(null), 2000);
+    }
+  };
+
+  const copyInviteLink = async () => {
+    try {
+        const link = api.getInviteLink();
+        await navigator.clipboard.writeText(link);
+        setCopied('link');
+        setTimeout(() => setCopied(null), 2000);
+    } catch (e: any) {
+        console.error('Failed to copy invite link:', e);
+    }
+  };
+
+  const handleRemoveMember = (memberId: string) => {
+    if (!confirm('Are you sure you want to remove this member from the group?')) {
+        return;
+    }
+    
+    try {
+        api.removeMember(memberId);
+        // Refresh group members
+        if (group) {
+            const members = group.memberIds
+                .map(id => api.getUserById(id))
+                .filter((u): u is User => u !== undefined);
+            setGroupMembers(members);
+        }
+    } catch (e: any) {
+        alert(e.message || 'Failed to remove member');
     }
   };
 
@@ -166,7 +209,7 @@ const Profile: React.FC = () => {
             {group && (
                 <div className="bg-slate-900 rounded-[2rem] p-8 text-white shadow-xl shadow-slate-200 relative overflow-hidden">
                     <div className="absolute top-0 right-0 w-64 h-64 bg-violet-600 rounded-full blur-[100px] opacity-40 -mr-16 -mt-16 pointer-events-none"></div>
-                    <div className="relative z-10">
+                    <div className="relative z-10 space-y-4">
                         <div className="flex justify-between items-start mb-6">
                                 <div>
                                     <div className="flex items-center gap-2 text-violet-200 mb-1">
@@ -177,18 +220,72 @@ const Profile: React.FC = () => {
                                 </div>
                         </div>
                         
+                        {/* Invite Code */}
                         <div className="bg-white/10 p-4 rounded-xl flex items-center justify-between border border-white/10">
                                 <div>
                                     <p className="text-xs text-violet-200 font-bold uppercase tracking-wider mb-1">Invite Code</p>
                                     <p className="text-2xl font-mono font-bold tracking-widest">{group.inviteCode}</p>
                                 </div>
                                 <button 
-                                    onClick={copyInvite}
+                                    onClick={copyInviteCode}
                                     className="p-3 bg-white text-slate-900 rounded-lg hover:bg-violet-100 transition-colors font-bold flex items-center gap-2"
                                 >
-                                    <Copy size={18} /> Copy
+                                    <Copy size={18} /> {copied === 'code' ? 'Copied!' : 'Copy'}
                                 </button>
                         </div>
+
+                        {/* Invite Link */}
+                        <div className="bg-white/10 p-4 rounded-xl flex items-center justify-between border border-white/10">
+                                <div className="flex-1 min-w-0">
+                                    <p className="text-xs text-violet-200 font-bold uppercase tracking-wider mb-1">Invite Link</p>
+                                    <p className="text-sm font-mono truncate">{api.getInviteLink()}</p>
+                                </div>
+                                <button 
+                                    onClick={copyInviteLink}
+                                    className="p-3 bg-white text-slate-900 rounded-lg hover:bg-violet-100 transition-colors font-bold flex items-center gap-2 ml-2 flex-shrink-0"
+                                >
+                                    <LinkIcon size={18} /> {copied === 'link' ? 'Copied!' : 'Copy'}
+                                </button>
+                        </div>
+
+                        {/* Group Members (Admin View) */}
+                        {isAdmin && groupMembers.length > 0 && (
+                            <div className="mt-6 pt-6 border-t border-white/10">
+                                <div className="flex items-center gap-2 mb-4">
+                                    <Shield size={18} className="text-violet-200" />
+                                    <p className="text-sm font-bold uppercase tracking-wide text-violet-200">Group Members</p>
+                                </div>
+                                <div className="space-y-2">
+                                    {groupMembers.map(member => (
+                                        <div key={member.id} className="bg-white/5 p-3 rounded-lg flex items-center justify-between">
+                                            <div className="flex items-center gap-3">
+                                                <div className="w-8 h-8 rounded-full bg-white/10 text-white flex items-center justify-center text-xs font-bold">
+                                                    {member.avatarInitials}
+                                                </div>
+                                                <div>
+                                                    <p className="font-bold text-sm">{member.name}</p>
+                                                    {member.id === group.creatorId && (
+                                                        <p className="text-xs text-violet-300">Creator</p>
+                                                    )}
+                                                    {member.id !== group.creatorId && (group.adminIds || []).includes(member.id) && (
+                                                        <p className="text-xs text-violet-300">Admin</p>
+                                                    )}
+                                                </div>
+                                            </div>
+                                            {member.id !== currentUser.id && member.id !== group.creatorId && (
+                                                <button
+                                                    onClick={() => handleRemoveMember(member.id)}
+                                                    className="p-2 hover:bg-white/10 rounded-lg transition-colors text-red-300 hover:text-red-200"
+                                                    title="Remove member"
+                                                >
+                                                    <X size={18} />
+                                                </button>
+                                            )}
+                                        </div>
+                                    ))}
+                                </div>
+                            </div>
+                        )}
                     </div>
                 </div>
             )}

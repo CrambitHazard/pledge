@@ -276,6 +276,7 @@ const validateGroup = (group: any): group is Group => {
     typeof group.name === 'string' &&
     typeof group.inviteCode === 'string' &&
     Array.isArray(group.memberIds) &&
+    Array.isArray(group.adminIds || []) &&
     typeof group.creatorId === 'string'
   );
 };
@@ -311,12 +312,20 @@ const validateRelationships = (users: User[], groups: Group[], resolutions: Reso
     }
   }
 
-  // Validate group.memberIds references
+  // Validate group.memberIds references and ensure adminIds exists
   for (const group of groups) {
+    // Ensure adminIds exists and includes creator
+    if (!group.adminIds || !Array.isArray(group.adminIds)) {
+      group.adminIds = [group.creatorId];
+    } else if (!group.adminIds.includes(group.creatorId)) {
+      group.adminIds.push(group.creatorId);
+    }
+    
     for (const memberId of group.memberIds) {
       if (!userIds.has(memberId)) {
         console.warn(`Group ${group.id} references non-existent user ${memberId}`);
         group.memberIds = group.memberIds.filter(id => id !== memberId);
+        group.adminIds = (group.adminIds || []).filter(id => id !== memberId);
       }
     }
   }
@@ -580,6 +589,7 @@ export const api = {
       name,
       inviteCode: Math.random().toString(36).substring(2, 8).toUpperCase(),
       creatorId: user.id,
+      adminIds: [user.id], // Creator is admin
       memberIds: [user.id],
       dailyHeroId: undefined,
       lastHeroSelectionDate: '',
@@ -610,8 +620,12 @@ export const api = {
     const user = api.getUser();
     if (user.groupId) throw new Error("User already in a group");
 
+    // Normalize invite code: trim whitespace and convert to uppercase
+    const normalizedCode = inviteCode.trim().toUpperCase();
+    if (!normalizedCode) throw new Error("Invalid invite code");
+
     const groups = api._getGroups();
-    const groupIndex = groups.findIndex(g => g.inviteCode === inviteCode);
+    const groupIndex = groups.findIndex(g => g.inviteCode.toUpperCase() === normalizedCode);
     if (groupIndex === -1) throw new Error("Invalid invite code");
 
     const group = groups[groupIndex];
@@ -635,7 +649,97 @@ export const api = {
       return updatedGroups[groupIndex];
     }
 
-    return group;
+      return group;
+  },
+
+  /**
+   * Remove a member from the group (admin only)
+   */
+  removeMember: (memberId: string): void => {
+    const currentUser = api.getUser();
+    if (!currentUser.groupId) throw new Error("Not in a group");
+
+    const groups = api._getGroups();
+    const groupIndex = groups.findIndex(g => g.id === currentUser.groupId);
+    if (groupIndex === -1) throw new Error("Group not found");
+
+    const group = groups[groupIndex];
+    
+    // Check if user is admin
+    const isAdmin = group.adminIds?.includes(currentUser.id) || group.creatorId === currentUser.id;
+    if (!isAdmin) throw new Error("Only admins can remove members");
+
+    // Cannot remove yourself
+    if (memberId === currentUser.id) throw new Error("Cannot remove yourself from the group");
+
+    // Cannot remove creator
+    if (memberId === group.creatorId) throw new Error("Cannot remove the group creator");
+
+    if (!group.memberIds.includes(memberId)) {
+      throw new Error("User is not a member of this group");
+    }
+
+    // Remove from group
+    const updatedGroups = [...groups];
+    updatedGroups[groupIndex] = {
+      ...group,
+      memberIds: group.memberIds.filter(id => id !== memberId),
+      adminIds: (group.adminIds || []).filter(id => id !== memberId)
+    };
+
+    // Remove groupId from user
+    const users = api._getUsers();
+    const memberIndex = users.findIndex(u => u.id === memberId);
+    if (memberIndex !== -1) {
+      const updatedUsers = [...users];
+      updatedUsers[memberIndex] = { ...updatedUsers[memberIndex], groupId: undefined };
+      
+      batchSetStorage([
+        { key: KEYS.GROUPS, value: updatedGroups },
+        { key: KEYS.USERS, value: updatedUsers }
+      ]);
+    } else {
+      setStorage(KEYS.GROUPS, updatedGroups);
+    }
+  },
+
+  /**
+   * Check if current user is admin of their group
+   */
+  isGroupAdmin: (): boolean => {
+    try {
+      const user = api.getUser();
+      if (!user.groupId) return false;
+      
+      const group = api._getGroups().find(g => g.id === user.groupId);
+      if (!group) return false;
+      
+      return group.adminIds?.includes(user.id) || group.creatorId === user.id;
+    } catch {
+      return false;
+    }
+  },
+
+  /**
+   * Generate invite link for the group
+   */
+  getInviteLink: (): string => {
+    const user = api.getUser();
+    if (!user.groupId) throw new Error("Not in a group");
+
+    const group = api._getGroups().find(g => g.id === user.groupId);
+    if (!group) throw new Error("Group not found");
+
+    // Generate link with invite code as hash parameter
+    const baseUrl = window.location.origin + window.location.pathname;
+    return `${baseUrl}#/join/${group.inviteCode}`;
+  },
+
+  /**
+   * Join group using invite link (extracts code from URL)
+   */
+  joinGroupByLink: (inviteCode: string): Group => {
+    return api.joinGroup(inviteCode);
   },
 
   getGroup: (): Group | null => {

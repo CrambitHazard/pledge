@@ -1,6 +1,6 @@
 
-import React, { useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import React, { useState, useEffect } from 'react';
+import { useNavigate, useParams } from 'react-router-dom';
 import Button from '../components/Button';
 import Input from '../components/Input';
 import Logo from '../components/Logo';
@@ -9,9 +9,28 @@ import { Users, UserPlus, ArrowRight } from 'lucide-react';
 
 const GroupEntry: React.FC = () => {
   const navigate = useNavigate();
+  const { inviteCode: urlInviteCode } = useParams<{ inviteCode?: string }>();
   const [groupName, setGroupName] = useState('');
   const [inviteCode, setInviteCode] = useState('');
   const [error, setError] = useState('');
+
+  // Auto-fill invite code from URL if present
+  useEffect(() => {
+    if (urlInviteCode) {
+      setInviteCode(urlInviteCode);
+      // Auto-submit if code is in URL
+      const timer = setTimeout(() => {
+        setError('');
+        try {
+          api.joinGroup(urlInviteCode);
+          navigate('/');
+        } catch (err: any) {
+          setError(err.message || 'Failed to join group');
+        }
+      }, 100);
+      return () => clearTimeout(timer);
+    }
+  }, [urlInviteCode, navigate]);
 
   const handleCreate = (e: React.FormEvent) => {
     e.preventDefault();
@@ -28,12 +47,14 @@ const GroupEntry: React.FC = () => {
     e.preventDefault();
     setError('');
     try {
-      api.joinGroup(inviteCode.trim().toUpperCase());
+      // Service now handles normalization, just pass the raw input
+      api.joinGroup(inviteCode);
       navigate('/');
     } catch (err: any) {
       setError(err.message || 'Failed to join group');
     }
   };
+
 
   const user = api.getUser();
 

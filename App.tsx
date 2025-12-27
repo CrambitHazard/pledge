@@ -61,6 +61,14 @@ const App: React.FC = () => {
             </ProtectedRoute>
         } />
 
+        <Route path="/join/:inviteCode" element={
+            <ProtectedRoute>
+                <Layout>
+                    <GroupEntry />
+                </Layout>
+            </ProtectedRoute>
+        } />
+
         <Route path="/" element={
           <ProtectedRoute>
             <Layout>
