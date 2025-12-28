@@ -15,24 +15,35 @@ const GroupEntry: React.FC = () => {
   const [error, setError] = useState('');
 
   // Normalize invite code - handle mobile input issues
+  // MUST match the backend normalization exactly
   const normalizeInviteCode = (code: string): string => {
     if (!code) return '';
     
-    // First, decode URL encoding if present
-    let normalized = code;
-    try {
-      normalized = decodeURIComponent(normalized);
-    } catch {
-      // If decode fails, continue with original
+    // Convert to string and trim
+    let normalized = String(code).trim();
+    
+    if (!normalized) return '';
+    
+    // Handle URL-encoded characters (may be double-encoded on mobile)
+    let decodeAttempts = 0;
+    while (decodeAttempts < 3) {
+      try {
+        const decoded = decodeURIComponent(normalized);
+        if (decoded === normalized) break; // No more encoding to decode
+        normalized = decoded;
+        decodeAttempts++;
+      } catch {
+        break; // Can't decode further
+      }
     }
     
-    // Remove all whitespace (spaces, tabs, newlines)
-    normalized = normalized.replace(/\s+/g, '');
+    // Remove ALL whitespace (spaces, tabs, newlines, zero-width spaces)
+    normalized = normalized.replace(/[\s\u200B-\u200D\uFEFF]/g, '');
     
     // Convert to uppercase
     normalized = normalized.toUpperCase();
     
-    // Only keep alphanumeric characters (A-Z, 0-9)
+    // Remove any non-alphanumeric characters
     normalized = normalized.replace(/[^A-Z0-9]/g, '');
     
     return normalized;
@@ -72,11 +83,12 @@ const GroupEntry: React.FC = () => {
     return () => window.removeEventListener('hashchange', handleHashChange);
   }, [urlInviteCode]);
 
-  // Handle input changes - auto-normalize as user types
+  // Handle input changes - normalize as user types but preserve their input visually
   const handleInviteCodeChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const rawValue = e.target.value;
-    const normalized = normalizeInviteCode(rawValue);
-    setInviteCode(normalized);
+    // Allow user to type freely, but normalize for storage
+    // This prevents mobile keyboard interference
+    setInviteCode(rawValue);
     setError(''); // Clear error when user types
   };
 
@@ -95,18 +107,21 @@ const GroupEntry: React.FC = () => {
     e.preventDefault();
     setError('');
     
-    if (!inviteCode || !inviteCode.trim()) {
+    if (!inviteCode) {
       setError('Please enter an invite code');
       return;
     }
     
-    // Final normalization before sending
+    // Normalize the code - this handles all mobile input issues
     const finalCode = normalizeInviteCode(inviteCode);
     
     if (!finalCode || finalCode.length < 4) {
       setError('Invalid invite code format. Code should be alphanumeric and at least 4 characters.');
       return;
     }
+    
+    // Update the input field to show the normalized version
+    setInviteCode(finalCode);
     
     try {
       // Double-check user isn't already in a group
@@ -116,6 +131,8 @@ const GroupEntry: React.FC = () => {
         return;
       }
       
+      // Pass the normalized code to the API
+      // The API will normalize again, but that's fine - normalization is idempotent
       api.joinGroup(finalCode);
       navigate('/', { replace: true });
     } catch (err: any) {
@@ -123,15 +140,14 @@ const GroupEntry: React.FC = () => {
       const errorMsg = err.message || 'Failed to join group. Please check the invite code and try again.';
       setError(errorMsg);
       
-      // Debug logging (only in development)
-      if (process.env.NODE_ENV === 'development') {
-        console.error('Join group error:', {
-          error: err.message,
-          codeAttempted: finalCode,
-          codeLength: finalCode.length,
-          originalInput: inviteCode
-        });
-      }
+      // Always log for debugging (helps identify mobile issues)
+      console.error('Join group error:', {
+        error: err.message,
+        normalizedCode: finalCode,
+        codeLength: finalCode.length,
+        originalInput: inviteCode,
+        userAgent: navigator.userAgent
+      });
     }
   };
 
@@ -219,7 +235,9 @@ const GroupEntry: React.FC = () => {
                 autoCapitalize="characters"
                 autoCorrect="off"
                 autoComplete="off"
+                spellCheck="false"
                 inputMode="text"
+                maxLength={20}
                 required
               />
               {urlInviteCode && (

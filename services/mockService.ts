@@ -340,6 +340,44 @@ const validateRelationships = (users: User[], groups: Group[], resolutions: Reso
 
 // --- Internal Logic Helpers ---
 
+/**
+ * Normalize invite code for consistent comparison
+ * Handles URL encoding, whitespace, case, and special characters
+ * This function MUST be idempotent - normalizing twice should give the same result
+ */
+const normalizeInviteCode = (code: string | null | undefined): string => {
+  if (!code) return '';
+  
+  // Convert to string and handle null/undefined
+  let normalized = String(code).trim();
+  
+  if (!normalized) return '';
+  
+  // Handle URL-encoded characters (may be double-encoded on mobile)
+  let decodeAttempts = 0;
+  while (decodeAttempts < 3) {
+    try {
+      const decoded = decodeURIComponent(normalized);
+      if (decoded === normalized) break; // No more encoding to decode
+      normalized = decoded;
+      decodeAttempts++;
+    } catch {
+      break; // Can't decode further
+    }
+  }
+  
+  // Remove ALL whitespace (spaces, tabs, newlines, zero-width spaces) - mobile keyboards often add these
+  normalized = normalized.replace(/[\s\u200B-\u200D\uFEFF]/g, '');
+  
+  // Convert to uppercase (handles any case variations)
+  normalized = normalized.toUpperCase();
+  
+  // Remove any non-alphanumeric characters (but preserve A-Z and 0-9)
+  normalized = normalized.replace(/[^A-Z0-9]/g, '');
+  
+  return normalized;
+};
+
 const determineIdentityLabel = (user: User, resolutions: Resolution[]): IdentityLabel => {
     const startOfQuarter = getStartOfQuarter();
     const today = new Date();
@@ -644,24 +682,8 @@ export const api = {
       throw new Error("Invalid invite code format");
     }
 
-    // Normalize invite code: handle URL encoding, remove whitespace, convert to uppercase
-    let normalizedCode = inviteCode;
-    
-    // Handle URL-encoded characters
-    try {
-      normalizedCode = decodeURIComponent(normalizedCode);
-    } catch {
-      // If decode fails, continue with original
-    }
-    
-    // Remove all whitespace (spaces, tabs, newlines) - mobile keyboards often add these
-    normalizedCode = normalizedCode.replace(/\s+/g, '');
-    
-    // Convert to uppercase
-    normalizedCode = normalizedCode.toUpperCase();
-    
-    // Remove any non-alphanumeric characters (but preserve the core code)
-    normalizedCode = normalizedCode.replace(/[^A-Z0-9]/g, '');
+    // Normalize the input code using shared function
+    const normalizedCode = normalizeInviteCode(inviteCode);
     
     if (!normalizedCode || normalizedCode.length < 4) {
       throw new Error("Invalid invite code format. Code should be alphanumeric and at least 4 characters.");
@@ -669,25 +691,55 @@ export const api = {
 
     const groups = api._getGroups();
     
-    // Normalize stored codes for comparison (handle any edge cases)
+    // Find group by comparing normalized codes
     const groupIndex = groups.findIndex(g => {
       if (!g.inviteCode) return false;
       
-      // Normalize stored code the same way
-      let storedCode = String(g.inviteCode).trim().toUpperCase().replace(/[^A-Z0-9]/g, '');
+      // Normalize stored code using the SAME function
+      const storedCode = normalizeInviteCode(g.inviteCode);
+      
+      // Debug logging in development
+      if (process.env.NODE_ENV === 'development' && storedCode === normalizedCode) {
+        console.log('Code match found:', {
+          attempted: normalizedCode,
+          stored: g.inviteCode,
+          normalizedStored: storedCode
+        });
+      }
       
       return storedCode === normalizedCode;
     });
     
     if (groupIndex === -1) {
-      // Provide helpful error message
-      const availableCodes = groups.map(g => g.inviteCode).filter(Boolean).slice(0, 3);
-      console.error('Join failed:', {
-        attempted: normalizedCode,
-        length: normalizedCode.length,
-        availableCodes: availableCodes
+      // Debug: log what we're comparing
+      const allCodes = groups.map(g => ({
+        original: g.inviteCode,
+        normalized: normalizeInviteCode(g.inviteCode)
+      })).filter(c => c.original);
+      
+      // Check if there's a close match (for debugging)
+      const closeMatches = allCodes.filter(c => {
+        const stored = c.normalized;
+        // Check if codes are similar (same length, similar characters)
+        return stored.length === normalizedCode.length || 
+               stored.substring(0, 4) === normalizedCode.substring(0, 4);
       });
-      throw new Error(`Invalid invite code. Please check the code and try again.`);
+      
+      console.error('Join failed - no exact match found:', {
+        attempted: normalizedCode,
+        attemptedLength: normalizedCode.length,
+        attemptedOriginal: inviteCode,
+        allAvailableCodes: allCodes,
+        closeMatches: closeMatches,
+        totalGroups: groups.length
+      });
+      
+      // More helpful error message
+      if (closeMatches.length > 0) {
+        throw new Error(`Invalid invite code. Did you mean "${closeMatches[0].original}"? Please check and try again.`);
+      }
+      
+      throw new Error(`Invalid invite code "${normalizedCode}". Please check the code and try again.`);
     }
 
     const group = groups[groupIndex];
