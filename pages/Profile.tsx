@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { api } from '../services/mockService';
+import { api } from '../services/supabaseService';
 import { Award, Target, LogOut, Copy, Users, FileText, ArrowRight, Calendar, Archive, Medal, Tag, ArrowLeft, Globe, Flame, CheckSquare, Link as LinkIcon, X, Shield } from 'lucide-react';
 import Button from '../components/Button';
 import { useNavigate, useParams } from 'react-router-dom';

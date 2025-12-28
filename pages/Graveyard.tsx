@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { api } from '../services/mockService';
+import { api } from '../services/supabaseService';
 import { Resolution } from '../types';
 import Button from '../components/Button';
 import { ArrowLeft, Archive, AlertCircle, Clock } from 'lucide-react';

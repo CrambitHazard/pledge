@@ -13,11 +13,11 @@ import GroupEntry from './pages/GroupEntry';
 import YearInReview from './pages/YearInReview';
 import PeriodicReportPage from './pages/PeriodicReport';
 import Graveyard from './pages/Graveyard';
-import { api } from './services/mockService';
+import { api, supabase } from './services/supabaseService';
+import { Group } from './types';
 
 /**
  * Extracts invite code from URL query parameters
- * Mobile messaging apps preserve query params (unlike hash fragments)
  */
 const getInviteCodeFromQuery = (): string | null => {
   const urlParams = new URLSearchParams(window.location.search);
@@ -27,7 +27,6 @@ const getInviteCodeFromQuery = (): string | null => {
 
 /**
  * Clears the invite query param from URL without page reload
- * Keeps the URL clean after processing the invite
  */
 const clearInviteQueryParam = (): void => {
   const url = new URL(window.location.href);
@@ -37,7 +36,6 @@ const clearInviteQueryParam = (): void => {
 
 /**
  * Component that handles invite code from query params
- * Redirects to group-entry with the code if present
  */
 const InviteCodeHandler: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const navigate = useNavigate();
@@ -46,9 +44,7 @@ const InviteCodeHandler: React.FC<{ children: React.ReactNode }> = ({ children }
   useEffect(() => {
     const inviteCode = getInviteCodeFromQuery();
     if (inviteCode && !handled) {
-      // Clear the query param to keep URL clean
       clearInviteQueryParam();
-      // Navigate to the join route with the invite code
       navigate(`/join/${inviteCode}`, { replace: true });
       setHandled(true);
     } else {
@@ -56,48 +52,91 @@ const InviteCodeHandler: React.FC<{ children: React.ReactNode }> = ({ children }
     }
   }, [navigate, handled]);
 
-  // Wait until we've checked for invite code before rendering
-  if (!handled) {
-    return null;
-  }
-
+  if (!handled) return null;
   return <>{children}</>;
 };
 
 const ProtectedRoute = ({ children }: { children?: React.ReactNode }) => {
-  const isAuth = api.isAuthenticated();
+  const [loading, setLoading] = useState(true);
+  const [isAuthenticated, setIsAuthenticated] = useState(false);
+  const [group, setGroup] = useState<Group | null>(null);
   const location = useLocation();
 
-  if (!isAuth) {
-    // Preserve invite link in state so user can join after login
+  useEffect(() => {
+    const checkAuth = async () => {
+      setLoading(true);
+      try {
+        const { data: { session } } = await supabase.auth.getSession();
+        
+        if (session?.user) {
+          setIsAuthenticated(true);
+          localStorage.setItem('sb-session-user-id', session.user.id);
+          
+          // Cache user data
+          await api._cacheCurrentUser(session.user.id);
+          
+          // Check for group
+          const userGroup = await api.getGroup();
+          setGroup(userGroup);
+        } else {
+          setIsAuthenticated(false);
+          setGroup(null);
+        }
+      } catch (e) {
+        console.error('Auth check error:', e);
+        setIsAuthenticated(false);
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    checkAuth();
+
+    // Listen for auth changes
+    const { data: { subscription } } = supabase.auth.onAuthStateChange(async (event, session) => {
+      if (session?.user) {
+        setIsAuthenticated(true);
+        localStorage.setItem('sb-session-user-id', session.user.id);
+        await api._cacheCurrentUser(session.user.id);
+        const userGroup = await api.getGroup();
+        setGroup(userGroup);
+      } else {
+        setIsAuthenticated(false);
+        setGroup(null);
+        localStorage.removeItem('sb-session-user-id');
+        localStorage.removeItem('sb-cached-user');
+      }
+    });
+
+    return () => subscription.unsubscribe();
+  }, []);
+
+  if (loading) {
+    return (
+      <div className="min-h-screen bg-[#FFFBF5] flex items-center justify-center">
+        <div className="text-slate-500 font-medium">Loading...</div>
+      </div>
+    );
+  }
+
+  if (!isAuthenticated) {
     const inviteCodeMatch = location.pathname.match(/^\/join\/(.+)$/);
     const inviteCode = inviteCodeMatch ? inviteCodeMatch[1] : null;
     return <Navigate to="/auth" replace state={{ from: location, inviteCode }} />;
   }
-  
-  // Check if user has a group
-  let user;
-  try {
-     user = api.getUser();
-  } catch(e) {
-      api.logout();
-      return <Navigate to="/auth" replace />;
-  }
 
-  // Allow access to group-entry and join routes even without a group
   const isGroupEntryRoute = location.pathname === '/group-entry' || location.pathname.startsWith('/join/');
 
-  if (!user.groupId && !isGroupEntryRoute) {
-      return <Navigate to="/group-entry" replace />;
+  if (!group && !isGroupEntryRoute) {
+    return <Navigate to="/group-entry" replace />;
   }
 
-  if (user.groupId && location.pathname === '/group-entry') {
-      return <Navigate to="/" replace />;
+  if (group && location.pathname === '/group-entry') {
+    return <Navigate to="/" replace />;
   }
 
-  // If user has a group and tries to join another, redirect to home
-  if (user.groupId && location.pathname.startsWith('/join/')) {
-      return <Navigate to="/" replace />;
+  if (group && location.pathname.startsWith('/join/')) {
+    return <Navigate to="/" replace />;
   }
 
   return <>{children}</>;

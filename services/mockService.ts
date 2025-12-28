@@ -1,3 +1,8 @@
+/**
+ * @deprecated This mock service is deprecated. Use pocketbaseService.ts instead.
+ * This file is kept for reference only and will be removed in a future update.
+ */
+
 import { Resolution, ResolutionType, Difficulty, ResolutionStatus, User, FeedEvent, Confession, Group, Bet, PeriodicReport, IdentityLabel } from '../types';
 
 const KEYS = {

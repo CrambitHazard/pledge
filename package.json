@@ -9,9 +9,11 @@
     "preview": "vite preview"
   },
   "dependencies": {
-    "react-dom": "^19.2.3",
-    "react": "^19.2.3",
+    "@supabase/supabase-js": "^2.89.0",
     "lucide-react": "^0.562.0",
+    "pocketbase": "^0.26.5",
+    "react": "^19.2.3",
+    "react-dom": "^19.2.3",
     "react-router-dom": "^7.11.0"
   },
   "devDependencies": {

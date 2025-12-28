@@ -2,7 +2,7 @@
 import React, { useState } from 'react';
 import { useLocation, Link, useNavigate } from 'react-router-dom';
 import { CheckCircle2, List, Trophy, Zap, LogOut, Users, Menu, X } from 'lucide-react';
-import { api } from '../services/mockService';
+import { api } from '../services/supabaseService';
 import Logo from './Logo';
 
 interface LayoutProps {

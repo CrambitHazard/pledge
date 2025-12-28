@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
-import { api } from '../services/mockService';
+import { api } from '../services/supabaseService';
 import { PeriodicReport } from '../types';
 import Button from '../components/Button';
 import { ArrowLeft, Calendar, TrendingUp, TrendingDown, Minus, Crown, Users } from 'lucide-react';

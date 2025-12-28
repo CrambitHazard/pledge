@@ -4,55 +4,61 @@ import { useNavigate, useParams } from 'react-router-dom';
 import Button from '../components/Button';
 import Input from '../components/Input';
 import Logo from '../components/Logo';
-import { api } from '../services/mockService';
+import { api } from '../services/supabaseService';
+import { User } from '../types';
 import { Users, UserPlus, ArrowRight } from 'lucide-react';
 
 const GroupEntry: React.FC = () => {
   const navigate = useNavigate();
   const { inviteCode: urlInviteCode } = useParams<{ inviteCode?: string }>();
+  
+  const [user, setUser] = useState<User | null>(null);
   const [groupName, setGroupName] = useState('');
   const [inviteCode, setInviteCode] = useState('');
   const [error, setError] = useState('');
+  const [isLoading, setIsLoading] = useState(false);
+
+  useEffect(() => {
+    // Get cached user
+    try {
+      const cachedUser = api.getUser();
+      setUser(cachedUser);
+    } catch {
+      // Not logged in
+    }
+  }, []);
 
   // Normalize invite code - handle mobile input issues
-  // MUST match the backend normalization exactly
   const normalizeInviteCode = (code: string): string => {
     if (!code) return '';
     
-    // Convert to string and trim
     let normalized = String(code).trim();
-    
     if (!normalized) return '';
     
-    // Handle URL-encoded characters (may be double-encoded on mobile)
+    // Handle URL-encoded characters
     let decodeAttempts = 0;
     while (decodeAttempts < 3) {
       try {
         const decoded = decodeURIComponent(normalized);
-        if (decoded === normalized) break; // No more encoding to decode
+        if (decoded === normalized) break;
         normalized = decoded;
         decodeAttempts++;
       } catch {
-        break; // Can't decode further
+        break;
       }
     }
     
-    // Remove ALL whitespace (spaces, tabs, newlines, zero-width spaces)
+    // Remove whitespace and special characters
     normalized = normalized.replace(/[\s\u200B-\u200D\uFEFF]/g, '');
-    
-    // Convert to uppercase
     normalized = normalized.toUpperCase();
-    
-    // Remove any non-alphanumeric characters
     normalized = normalized.replace(/[^A-Z0-9]/g, '');
     
     return normalized;
   };
 
-  // Extract invite code from URL (for invite links)
+  // Extract invite code from URL
   useEffect(() => {
     const extractAndSetCode = () => {
-      // Try URL params first (from route)
       if (urlInviteCode) {
         const normalized = normalizeInviteCode(urlInviteCode);
         if (normalized) {
@@ -61,8 +67,7 @@ const GroupEntry: React.FC = () => {
         return;
       }
       
-      // Fallback 1: Check query parameters (mobile-friendly invite links)
-      // Query params like ?invite=CODE are preserved by mobile messaging apps
+      // Check query parameters (mobile-friendly)
       const urlParams = new URLSearchParams(window.location.search);
       const queryInviteCode = urlParams.get('invite');
       if (queryInviteCode) {
@@ -73,7 +78,7 @@ const GroupEntry: React.FC = () => {
         return;
       }
       
-      // Fallback 2: check hash directly (legacy support)
+      // Fallback: check hash directly
       const hash = window.location.hash;
       const hashMatch = hash.match(/\/join\/([^\/\?#]+)/);
       if (hashMatch && hashMatch[1]) {
@@ -86,36 +91,31 @@ const GroupEntry: React.FC = () => {
 
     extractAndSetCode();
 
-    // Listen for hash changes (browser navigation)
-    const handleHashChange = () => {
-      extractAndSetCode();
-    };
-
-    window.addEventListener('hashchange', handleHashChange);
-    return () => window.removeEventListener('hashchange', handleHashChange);
+    window.addEventListener('hashchange', extractAndSetCode);
+    return () => window.removeEventListener('hashchange', extractAndSetCode);
   }, [urlInviteCode]);
 
-  // Handle input changes - normalize as user types but preserve their input visually
   const handleInviteCodeChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const rawValue = e.target.value;
-    // Allow user to type freely, but normalize for storage
-    // This prevents mobile keyboard interference
-    setInviteCode(rawValue);
-    setError(''); // Clear error when user types
+    setInviteCode(e.target.value);
+    setError('');
   };
 
-  const handleCreate = (e: React.FormEvent) => {
+  const handleCreate = async (e: React.FormEvent) => {
     e.preventDefault();
     setError('');
+    setIsLoading(true);
+    
     try {
-      api.createGroup(groupName);
+      await api.createGroup(groupName);
       navigate('/');
     } catch (err: any) {
       setError(err.message || 'Failed to create group');
+    } finally {
+      setIsLoading(false);
     }
   };
 
-  const handleJoin = (e: React.FormEvent) => {
+  const handleJoin = async (e: React.FormEvent) => {
     e.preventDefault();
     setError('');
     
@@ -124,7 +124,6 @@ const GroupEntry: React.FC = () => {
       return;
     }
     
-    // Normalize the code - this handles all mobile input issues
     const finalCode = normalizeInviteCode(inviteCode);
     
     if (!finalCode || finalCode.length < 4) {
@@ -132,27 +131,15 @@ const GroupEntry: React.FC = () => {
       return;
     }
     
-    // Update the input field to show the normalized version
     setInviteCode(finalCode);
+    setIsLoading(true);
     
     try {
-      // Double-check user isn't already in a group
-      const user = api.getUser();
-      if (user.groupId) {
-        setError('You are already in a group. Leave your current group first to join another.');
-        return;
-      }
-      
-      // Pass the normalized code to the API
-      // The API will normalize again, but that's fine - normalization is idempotent
-      api.joinGroup(finalCode);
+      await api.joinGroup(finalCode);
       navigate('/', { replace: true });
     } catch (err: any) {
-      // Provide more helpful error messages
       const errorMsg = err.message || 'Failed to join group. Please check the invite code and try again.';
       setError(errorMsg);
-      
-      // Always log for debugging (helps identify mobile issues)
       console.error('Join group error:', {
         error: err.message,
         normalizedCode: finalCode,
@@ -160,10 +147,17 @@ const GroupEntry: React.FC = () => {
         originalInput: inviteCode,
         userAgent: navigator.userAgent
       });
+    } finally {
+      setIsLoading(false);
     }
   };
 
-  const user = api.getUser();
+  const handleLogout = async () => {
+    await api.logout();
+    navigate('/auth');
+  };
+
+  const userName = user?.name?.split(' ')[0] || 'there';
 
   return (
     <div className="min-h-screen bg-[#FFFBF5] flex flex-col items-center justify-center p-6">
@@ -175,7 +169,7 @@ const GroupEntry: React.FC = () => {
             <Logo className="h-10 w-10 text-white" />
           </div>
           <h1 className="text-4xl font-black text-slate-900 tracking-tight">
-            Welcome, {user.name.split(' ')[0]}.
+            Welcome, {userName}.
           </h1>
           <p className="text-xl text-slate-500 font-medium leading-relaxed">
             Pledge is a group-based accountability system. You must be part of a pack to continue.
@@ -219,8 +213,8 @@ const GroupEntry: React.FC = () => {
                 onChange={(e) => setGroupName(e.target.value)}
                 required
               />
-              <Button type="submit" fullWidth disabled={!groupName.trim()}>
-                Create Group <ArrowRight size={18} className="ml-2" />
+              <Button type="submit" fullWidth disabled={!groupName.trim() || isLoading}>
+                {isLoading ? 'Creating...' : <>Create Group <ArrowRight size={18} className="ml-2" /></>}
               </Button>
             </form>
           </div>
@@ -257,8 +251,8 @@ const GroupEntry: React.FC = () => {
                   Invite code detected from link. Click below to join.
                 </div>
               )}
-              <Button type="submit" variant="secondary" fullWidth disabled={!inviteCode.trim()}>
-                {urlInviteCode ? 'Join Group Now' : 'Join Group'}
+              <Button type="submit" variant="secondary" fullWidth disabled={!inviteCode.trim() || isLoading}>
+                {isLoading ? 'Joining...' : (urlInviteCode ? 'Join Group Now' : 'Join Group')}
               </Button>
             </form>
           </div>
@@ -268,7 +262,7 @@ const GroupEntry: React.FC = () => {
       
       <div className="mt-12">
         <button 
-          onClick={() => { api.logout(); navigate('/auth'); }}
+          onClick={handleLogout}
           className="text-slate-400 hover:text-slate-600 font-bold text-sm"
         >
           Sign Out

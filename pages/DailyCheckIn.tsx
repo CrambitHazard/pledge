@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { api } from '../services/mockService';
+import { api } from '../services/supabaseService';
 import { Resolution, ResolutionStatus } from '../types';
 import { Circle, CheckCircle2, XCircle, Lock, Globe, Flame, AlertCircle } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';

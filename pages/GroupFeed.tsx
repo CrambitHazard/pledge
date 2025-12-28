@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { api } from '../services/mockService';
+import { api } from '../services/supabaseService';
 import { FeedEvent, Confession, User } from '../types';
 import { Zap, Clock, CheckCircle2, XCircle, Flame, Sparkles, Trophy, AlertTriangle, EyeOff, Send, Crown, TrendingUp } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';

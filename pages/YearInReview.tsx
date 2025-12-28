@@ -1,7 +1,7 @@
 
 import React, { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { api } from '../services/mockService';
+import { api } from '../services/supabaseService';
 import { Resolution, User } from '../types';
 import Button from '../components/Button';
 import { ArrowLeft, Trophy, Calendar, Target, Award, Crown, Zap, TrendingUp } from 'lucide-react';

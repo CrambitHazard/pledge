@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { api } from '../services/mockService';
+import { api } from '../services/supabaseService';
 import { Resolution, ResolutionType, ResolutionStatus, Bet } from '../types';
 import Button from '../components/Button';
 import Input from '../components/Input';

@@ -4,12 +4,13 @@ import { useNavigate, useLocation } from 'react-router-dom';
 import Button from '../components/Button';
 import Input from '../components/Input';
 import Logo from '../components/Logo';
-import { api } from '../services/mockService';
+import { api } from '../services/supabaseService';
 
 const Auth: React.FC = () => {
   const navigate = useNavigate();
   const location = useLocation();
   const [isLogin, setIsLogin] = useState(true);
+  const [isLoading, setIsLoading] = useState(false);
   
   // Form State
   const [name, setName] = useState('');
@@ -20,38 +21,46 @@ const Auth: React.FC = () => {
   // Get invite code from location state (if coming from invite link)
   const inviteCode = (location.state as any)?.inviteCode;
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError('');
+    setIsLoading(true);
 
-    if (isLogin) {
-      const success = api.login(email, password);
-      if (success) {
-        // If there's an invite code, redirect to join page, otherwise go to dashboard
-        if (inviteCode) {
-          navigate(`/join/${inviteCode}`, { replace: true });
+    try {
+      if (isLogin) {
+        const success = await api.login(email, password);
+        if (success) {
+          // If there's an invite code, redirect to join page, otherwise go to dashboard
+          if (inviteCode) {
+            navigate(`/join/${inviteCode}`, { replace: true });
+          } else {
+            navigate('/', { replace: true });
+          }
         } else {
-          navigate('/', { replace: true });
+          setError('Invalid credentials');
         }
       } else {
-        setError('Invalid credentials');
-      }
-    } else {
-      if (!name.trim()) {
-        setError('Name is required');
-        return;
-      }
-      const success = api.signup(name, email, password);
-      if (success) {
-        // If there's an invite code, redirect to join page, otherwise go to dashboard
-        if (inviteCode) {
-          navigate(`/join/${inviteCode}`, { replace: true });
-        } else {
-          navigate('/', { replace: true });
+        if (!name.trim()) {
+          setError('Name is required');
+          setIsLoading(false);
+          return;
         }
-      } else {
-        setError('Email already exists');
+        const success = await api.signup(name, email, password);
+        if (success) {
+          // If there's an invite code, redirect to join page, otherwise go to dashboard
+          if (inviteCode) {
+            navigate(`/join/${inviteCode}`, { replace: true });
+          } else {
+            navigate('/', { replace: true });
+          }
+        } else {
+          setError('Email already exists');
+        }
       }
+    } catch (err: any) {
+      setError(err.message || 'An error occurred');
+    } finally {
+      setIsLoading(false);
     }
   };
 
@@ -126,8 +135,8 @@ const Auth: React.FC = () => {
             />
             
             <div className="pt-4">
-              <Button type="submit" fullWidth className="text-lg py-4">
-                {isLogin ? 'Sign In' : 'Create Account'}
+              <Button type="submit" fullWidth className="text-lg py-4" disabled={isLoading}>
+                {isLoading ? 'Please wait...' : (isLogin ? 'Sign In' : 'Create Account')}
               </Button>
             </div>
           </form>
