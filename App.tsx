@@ -1,5 +1,5 @@
-import React from 'react';
-import { HashRouter as Router, Routes, Route, Navigate, useLocation } from 'react-router-dom';
+import React, { useEffect, useState } from 'react';
+import { HashRouter as Router, Routes, Route, Navigate, useLocation, useNavigate } from 'react-router-dom';
 import Layout from './components/Layout';
 import Auth from './pages/Auth';
 import DailyCheckIn from './pages/DailyCheckIn';
@@ -14,6 +14,55 @@ import YearInReview from './pages/YearInReview';
 import PeriodicReportPage from './pages/PeriodicReport';
 import Graveyard from './pages/Graveyard';
 import { api } from './services/mockService';
+
+/**
+ * Extracts invite code from URL query parameters
+ * Mobile messaging apps preserve query params (unlike hash fragments)
+ */
+const getInviteCodeFromQuery = (): string | null => {
+  const urlParams = new URLSearchParams(window.location.search);
+  const inviteCode = urlParams.get('invite');
+  return inviteCode ? inviteCode.trim().toUpperCase() : null;
+};
+
+/**
+ * Clears the invite query param from URL without page reload
+ * Keeps the URL clean after processing the invite
+ */
+const clearInviteQueryParam = (): void => {
+  const url = new URL(window.location.href);
+  url.searchParams.delete('invite');
+  window.history.replaceState({}, '', url.toString());
+};
+
+/**
+ * Component that handles invite code from query params
+ * Redirects to group-entry with the code if present
+ */
+const InviteCodeHandler: React.FC<{ children: React.ReactNode }> = ({ children }) => {
+  const navigate = useNavigate();
+  const [handled, setHandled] = useState(false);
+
+  useEffect(() => {
+    const inviteCode = getInviteCodeFromQuery();
+    if (inviteCode && !handled) {
+      // Clear the query param to keep URL clean
+      clearInviteQueryParam();
+      // Navigate to the join route with the invite code
+      navigate(`/join/${inviteCode}`, { replace: true });
+      setHandled(true);
+    } else {
+      setHandled(true);
+    }
+  }, [navigate, handled]);
+
+  // Wait until we've checked for invite code before rendering
+  if (!handled) {
+    return null;
+  }
+
+  return <>{children}</>;
+};
 
 const ProtectedRoute = ({ children }: { children?: React.ReactNode }) => {
   const isAuth = api.isAuthenticated();
@@ -57,6 +106,7 @@ const ProtectedRoute = ({ children }: { children?: React.ReactNode }) => {
 const App: React.FC = () => {
   return (
     <Router>
+      <InviteCodeHandler>
       <Routes>
         <Route path="/auth" element={
             <Layout>
@@ -170,6 +220,7 @@ const App: React.FC = () => {
         
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
+      </InviteCodeHandler>
     </Router>
   );
 };

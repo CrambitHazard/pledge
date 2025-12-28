@@ -890,12 +890,12 @@ export const api = {
     const group = api._getGroups().find(g => g.id === user.groupId);
     if (!group) throw new Error("Group not found");
 
-    // Generate link with invite code - ensure it works on mobile browsers
-    // Use hash routing format that works consistently across devices
+    // Generate link with invite code using query parameters
+    // Query params are preserved by mobile messaging apps (unlike hash fragments)
+    // This ensures the invite code survives when links are shared via iMessage, WhatsApp, SMS, etc.
     const baseUrl = window.location.origin + window.location.pathname;
-    // Remove trailing slash if present, then add hash route
     const cleanBase = baseUrl.replace(/\/$/, '');
-    return `${cleanBase}#/join/${encodeURIComponent(group.inviteCode)}`;
+    return `${cleanBase}?invite=${encodeURIComponent(group.inviteCode)}`;
   },
 
   /**

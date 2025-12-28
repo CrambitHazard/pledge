@@ -52,7 +52,7 @@ const GroupEntry: React.FC = () => {
   // Extract invite code from URL (for invite links)
   useEffect(() => {
     const extractAndSetCode = () => {
-      // Try URL params first
+      // Try URL params first (from route)
       if (urlInviteCode) {
         const normalized = normalizeInviteCode(urlInviteCode);
         if (normalized) {
@@ -61,7 +61,19 @@ const GroupEntry: React.FC = () => {
         return;
       }
       
-      // Fallback: check hash directly (for mobile browsers)
+      // Fallback 1: Check query parameters (mobile-friendly invite links)
+      // Query params like ?invite=CODE are preserved by mobile messaging apps
+      const urlParams = new URLSearchParams(window.location.search);
+      const queryInviteCode = urlParams.get('invite');
+      if (queryInviteCode) {
+        const normalized = normalizeInviteCode(queryInviteCode);
+        if (normalized) {
+          setInviteCode(normalized);
+        }
+        return;
+      }
+      
+      // Fallback 2: check hash directly (legacy support)
       const hash = window.location.hash;
       const hashMatch = hash.match(/\/join\/([^\/\?#]+)/);
       if (hashMatch && hashMatch[1]) {
@@ -74,7 +86,7 @@ const GroupEntry: React.FC = () => {
 
     extractAndSetCode();
 
-    // Listen for hash changes (mobile browser navigation)
+    // Listen for hash changes (browser navigation)
     const handleHashChange = () => {
       extractAndSetCode();
     };
