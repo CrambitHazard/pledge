@@ -14,90 +14,71 @@ const GroupEntry: React.FC = () => {
   const [inviteCode, setInviteCode] = useState('');
   const [error, setError] = useState('');
 
-  // Extract invite code from URL params or hash (mobile fallback)
-  const extractInviteCode = React.useCallback((): string | null => {
-    // First try URL params (works on desktop)
-    if (urlInviteCode) {
-      return urlInviteCode;
+  // Normalize invite code - handle mobile input issues
+  const normalizeInviteCode = (code: string): string => {
+    if (!code) return '';
+    
+    // First, decode URL encoding if present
+    let normalized = code;
+    try {
+      normalized = decodeURIComponent(normalized);
+    } catch {
+      // If decode fails, continue with original
     }
     
-    // Fallback: read directly from hash (more reliable on mobile)
-    const hash = window.location.hash;
-    const hashMatch = hash.match(/\/join\/([^\/\?#]+)/);
-    if (hashMatch && hashMatch[1]) {
-      return hashMatch[1];
-    }
+    // Remove all whitespace (spaces, tabs, newlines)
+    normalized = normalized.replace(/\s+/g, '');
     
-    return null;
-  }, [urlInviteCode]);
+    // Convert to uppercase
+    normalized = normalized.toUpperCase();
+    
+    // Only keep alphanumeric characters (A-Z, 0-9)
+    normalized = normalized.replace(/[^A-Z0-9]/g, '');
+    
+    return normalized;
+  };
 
-  // Auto-fill invite code from URL if present
+  // Extract invite code from URL (for invite links)
   useEffect(() => {
-    const codeFromUrl = extractInviteCode();
-    if (codeFromUrl) {
-      // Normalize the invite code (handle URL encoding and case)
-      let normalizedCode: string;
-      try {
-        normalizedCode = decodeURIComponent(codeFromUrl).trim().toUpperCase();
-      } catch {
-        // If decode fails, just uppercase
-        normalizedCode = codeFromUrl.trim().toUpperCase();
-      }
-      
-      // Remove any non-alphanumeric characters
-      normalizedCode = normalizedCode.replace(/[^A-Z0-9]/g, '');
-      
-      if (!normalizedCode) {
-        setError('Invalid invite code format');
+    const extractAndSetCode = () => {
+      // Try URL params first
+      if (urlInviteCode) {
+        const normalized = normalizeInviteCode(urlInviteCode);
+        if (normalized) {
+          setInviteCode(normalized);
+        }
         return;
       }
       
-      setInviteCode(normalizedCode);
-      
-      // Try auto-join after a delay (mobile browsers may need more time)
-      const timer = setTimeout(() => {
-        setError('');
-        try {
-          // Check if user already has a group
-          const user = api.getUser();
-          if (user.groupId) {
-            setError('You are already in a group. Leave your current group first to join another.');
-            return;
-          }
-          
-          // Attempt to join
-          api.joinGroup(normalizedCode);
-          navigate('/', { replace: true });
-        } catch (err: any) {
-          // Don't auto-join on error, let user manually click the button
-          setError(err.message || 'Failed to join group. Please try clicking "Join Group" button.');
-        }
-      }, 800); // Increased delay for mobile browsers
-      return () => clearTimeout(timer);
-    }
-  }, [urlInviteCode, navigate, extractInviteCode]);
-
-  // Listen for hash changes (mobile browser navigation)
-  useEffect(() => {
-    const handleHashChange = () => {
-      const codeFromUrl = extractInviteCode();
-      if (codeFromUrl && !inviteCode) {
-        let normalizedCode: string;
-        try {
-          normalizedCode = decodeURIComponent(codeFromUrl).trim().toUpperCase();
-        } catch {
-          normalizedCode = codeFromUrl.trim().toUpperCase();
-        }
-        normalizedCode = normalizedCode.replace(/[^A-Z0-9]/g, '');
-        if (normalizedCode) {
-          setInviteCode(normalizedCode);
+      // Fallback: check hash directly (for mobile browsers)
+      const hash = window.location.hash;
+      const hashMatch = hash.match(/\/join\/([^\/\?#]+)/);
+      if (hashMatch && hashMatch[1]) {
+        const normalized = normalizeInviteCode(hashMatch[1]);
+        if (normalized) {
+          setInviteCode(normalized);
         }
       }
     };
 
+    extractAndSetCode();
+
+    // Listen for hash changes (mobile browser navigation)
+    const handleHashChange = () => {
+      extractAndSetCode();
+    };
+
     window.addEventListener('hashchange', handleHashChange);
     return () => window.removeEventListener('hashchange', handleHashChange);
-  }, [extractInviteCode, inviteCode]);
+  }, [urlInviteCode]);
+
+  // Handle input changes - auto-normalize as user types
+  const handleInviteCodeChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const rawValue = e.target.value;
+    const normalized = normalizeInviteCode(rawValue);
+    setInviteCode(normalized);
+    setError(''); // Clear error when user types
+  };
 
   const handleCreate = (e: React.FormEvent) => {
     e.preventDefault();
@@ -110,41 +91,49 @@ const GroupEntry: React.FC = () => {
     }
   };
 
-  const handleJoin = (e?: React.FormEvent) => {
-    if (e) e.preventDefault();
+  const handleJoin = (e: React.FormEvent) => {
+    e.preventDefault();
     setError('');
     
-    // Use URL code if present, otherwise use input
-    const codeFromUrl = extractInviteCode();
-    let codeToUse = codeFromUrl || inviteCode;
-    
-    if (!codeToUse || !codeToUse.trim()) {
+    if (!inviteCode || !inviteCode.trim()) {
       setError('Please enter an invite code');
       return;
     }
     
-    // Normalize the code
-    try {
-      codeToUse = decodeURIComponent(codeToUse).trim().toUpperCase();
-    } catch {
-      codeToUse = codeToUse.trim().toUpperCase();
-    }
-    codeToUse = codeToUse.replace(/[^A-Z0-9]/g, '');
+    // Final normalization before sending
+    const finalCode = normalizeInviteCode(inviteCode);
     
-    if (!codeToUse) {
-      setError('Invalid invite code format');
+    if (!finalCode || finalCode.length < 4) {
+      setError('Invalid invite code format. Code should be alphanumeric and at least 4 characters.');
       return;
     }
     
     try {
-      // Service now handles normalization, but we'll normalize here too for mobile compatibility
-      api.joinGroup(codeToUse);
+      // Double-check user isn't already in a group
+      const user = api.getUser();
+      if (user.groupId) {
+        setError('You are already in a group. Leave your current group first to join another.');
+        return;
+      }
+      
+      api.joinGroup(finalCode);
       navigate('/', { replace: true });
     } catch (err: any) {
-      setError(err.message || 'Failed to join group. Please check the invite code and try again.');
+      // Provide more helpful error messages
+      const errorMsg = err.message || 'Failed to join group. Please check the invite code and try again.';
+      setError(errorMsg);
+      
+      // Debug logging (only in development)
+      if (process.env.NODE_ENV === 'development') {
+        console.error('Join group error:', {
+          error: err.message,
+          codeAttempted: finalCode,
+          codeLength: finalCode.length,
+          originalInput: inviteCode
+        });
+      }
     }
   };
-
 
   const user = api.getUser();
 
@@ -226,24 +215,20 @@ const GroupEntry: React.FC = () => {
               <Input 
                 placeholder="Enter Invite Code" 
                 value={inviteCode}
-                onChange={(e) => setInviteCode(e.target.value.toUpperCase())}
-                autoComplete="off"
+                onChange={handleInviteCodeChange}
                 autoCapitalize="characters"
+                autoCorrect="off"
+                autoComplete="off"
+                inputMode="text"
                 required
               />
-              {(urlInviteCode || extractInviteCode()) && (
+              {urlInviteCode && (
                 <div className="text-xs text-slate-500 font-medium text-center">
                   Invite code detected from link. Click below to join.
                 </div>
               )}
-              <Button 
-                type="submit" 
-                variant="secondary" 
-                fullWidth 
-                disabled={!inviteCode.trim() && !extractInviteCode()}
-                onClick={() => handleJoin()}
-              >
-                {(urlInviteCode || extractInviteCode()) ? 'Join Group Now' : 'Join Group'}
+              <Button type="submit" variant="secondary" fullWidth disabled={!inviteCode.trim()}>
+                {urlInviteCode ? 'Join Group Now' : 'Join Group'}
               </Button>
             </form>
           </div>

@@ -640,29 +640,54 @@ export const api = {
     const user = api.getUser();
     if (user.groupId) throw new Error("User already in a group");
 
-    // Normalize invite code: trim whitespace, handle URL encoding, and convert to uppercase
-    let normalizedCode = inviteCode.trim();
+    if (!inviteCode || typeof inviteCode !== 'string') {
+      throw new Error("Invalid invite code format");
+    }
+
+    // Normalize invite code: handle URL encoding, remove whitespace, convert to uppercase
+    let normalizedCode = inviteCode;
+    
     // Handle URL-encoded characters
     try {
       normalizedCode = decodeURIComponent(normalizedCode);
     } catch {
-      // If decode fails, use original
+      // If decode fails, continue with original
     }
-    normalizedCode = normalizedCode.trim().toUpperCase();
     
-    // Remove any non-alphanumeric characters that might have been added
+    // Remove all whitespace (spaces, tabs, newlines) - mobile keyboards often add these
+    normalizedCode = normalizedCode.replace(/\s+/g, '');
+    
+    // Convert to uppercase
+    normalizedCode = normalizedCode.toUpperCase();
+    
+    // Remove any non-alphanumeric characters (but preserve the core code)
     normalizedCode = normalizedCode.replace(/[^A-Z0-9]/g, '');
     
-    if (!normalizedCode) throw new Error("Invalid invite code");
+    if (!normalizedCode || normalizedCode.length < 4) {
+      throw new Error("Invalid invite code format. Code should be alphanumeric and at least 4 characters.");
+    }
 
     const groups = api._getGroups();
+    
+    // Normalize stored codes for comparison (handle any edge cases)
     const groupIndex = groups.findIndex(g => {
-      const groupCode = (g.inviteCode || '').trim().toUpperCase();
-      return groupCode === normalizedCode;
+      if (!g.inviteCode) return false;
+      
+      // Normalize stored code the same way
+      let storedCode = String(g.inviteCode).trim().toUpperCase().replace(/[^A-Z0-9]/g, '');
+      
+      return storedCode === normalizedCode;
     });
     
     if (groupIndex === -1) {
-      throw new Error(`Invalid invite code "${normalizedCode}". Please check and try again.`);
+      // Provide helpful error message
+      const availableCodes = groups.map(g => g.inviteCode).filter(Boolean).slice(0, 3);
+      console.error('Join failed:', {
+        attempted: normalizedCode,
+        length: normalizedCode.length,
+        availableCodes: availableCodes
+      });
+      throw new Error(`Invalid invite code. Please check the code and try again.`);
     }
 
     const group = groups[groupIndex];
