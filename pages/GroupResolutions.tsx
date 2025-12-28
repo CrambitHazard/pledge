@@ -9,7 +9,11 @@ const GroupResolutions: React.FC = () => {
   const [groupData, setGroupData] = useState<{ user: User, resolutions: Resolution[] }[]>([]);
 
   useEffect(() => {
-    setGroupData(api.getPublicResolutionsForGroup());
+    const loadData = async () => {
+      const data = await api.getPublicResolutionsForGroup();
+      setGroupData(data || []);
+    };
+    loadData();
   }, []);
 
   return (

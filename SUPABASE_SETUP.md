@@ -1,91 +1,97 @@
-# Supabase Setup Guide
+# Supabase Setup Guide for Pledge
 
-Get your app working with a real database in 5 minutes.
+## Step 1: Create a Supabase Project
 
-## Step 1: Create Supabase Project (2 min)
+1. Go to [supabase.com](https://supabase.com) and sign up/login
+2. Click "New Project"
+3. Fill in:
+   - **Name**: pledge (or any name)
+   - **Database Password**: Save this somewhere safe!
+   - **Region**: Choose closest to your users
+4. Click "Create new project" and wait ~2 minutes for setup
 
-1. Go to [supabase.com](https://supabase.com) and sign up (free)
-2. Click **New Project**
-3. Choose a name (e.g., "pledge")
-4. Set a database password (save this somewhere)
-5. Select a region close to you
-6. Click **Create new project**
+## Step 2: Get Your API Keys
 
-Wait ~2 minutes for the project to be ready.
+1. In your Supabase dashboard, go to **Settings** → **API**
+2. Copy:
+   - **Project URL** (looks like `https://xxxxx.supabase.co`)
+   - **anon/public key** (the longer one starting with `eyJ...`)
 
-## Step 2: Run the Schema (1 min)
+## Step 3: Create Environment Variables
 
-1. In your Supabase dashboard, click **SQL Editor** (left sidebar)
-2. Click **New query**
-3. Copy the entire contents of `supabase/schema.sql` from your project
-4. Paste it into the SQL editor
-5. Click **Run** (or Ctrl+Enter)
+Create a file called `.env.local` in your project root:
 
-You should see "Success. No rows returned" - this means all tables were created.
-
-## Step 3: Get Your API Keys (1 min)
-
-1. Click **Settings** (gear icon) → **API**
-2. Copy these two values:
-   - **Project URL** (e.g., `https://xxxx.supabase.co`)
-   - **anon public** key (under "Project API keys")
-
-## Step 4: Add Keys to Your App (1 min)
-
-### For Local Development
-
-Create a file `.env.local` in your project root:
-
-```
+```env
 VITE_SUPABASE_URL=https://your-project-id.supabase.co
-VITE_SUPABASE_ANON_KEY=your-anon-key-here
+VITE_SUPABASE_ANON_KEY=eyJhbGc...your-anon-key...
 ```
 
-### For Vercel Deployment
+⚠️ **DO NOT** commit this file to git (it's in `.gitignore`)
 
-1. Go to your Vercel project → **Settings** → **Environment Variables**
-2. Add:
-   - `VITE_SUPABASE_URL` = your project URL
-   - `VITE_SUPABASE_ANON_KEY` = your anon key
-3. **Redeploy** your app (Deployments → Redeploy)
+## Step 4: Run the Database Schema
 
-## Step 5: Test It
+1. In Supabase dashboard, go to **SQL Editor**
+2. Click "New Query"
+3. Copy and paste the entire contents of `supabase/schema.sql`
+4. Click "Run" (or press Cmd/Ctrl + Enter)
 
-1. Start your app locally:
-   ```
-   npm run dev
-   ```
-2. Sign up with a new account
+You should see "Success. No rows returned" - this is correct!
+
+## Step 5: Disable Email Confirmation (Recommended for Development)
+
+1. Go to **Authentication** → **Settings** → **Email Auth**
+2. Toggle OFF "Enable email confirmations"
+3. Click "Save"
+
+This allows immediate login after signup without email verification.
+
+## Step 6: Verify Setup
+
+1. Start your app: `npm run dev`
+2. Sign up with any email (e.g., `test@example.com`) and password (min 6 chars)
 3. Create a group
-4. Share the invite link with someone (or open on your phone)
-5. They should be able to join your group!
-
----
+4. You should see the dashboard!
 
 ## Troubleshooting
 
-### "Failed to fetch" or connection errors
-- Double-check your `VITE_SUPABASE_URL` is correct
-- Make sure you restarted `npm run dev` after adding env vars
+### "Invalid credentials" on login
+- Make sure you signed up first
+- Password must be at least 6 characters
+- Check if email confirmation is disabled
 
-### "Email already exists" when signing up
-- Email confirmation is enabled by default
-- To disable: Dashboard → Authentication → Providers → Email → Turn off "Confirm email"
+### "Failed to create group"
+- Check browser console for errors
+- Make sure the schema was run successfully
+- Verify your `.env.local` has correct keys
 
-### "Row Level Security" errors
-- Make sure you ran the entire `schema.sql` file
-- The RLS policies are at the bottom of that file
+### Data not persisting
+- Make sure you're using the correct Supabase project
+- Check that RLS policies were created (they're included in schema.sql)
 
-### Can't see data in dashboard
-- Click **Table Editor** in the sidebar
-- You should see: profiles, groups, group_members, resolutions, etc.
+### Migration from Old Schema
 
----
+If you previously ran an older version of schema.sql, run this in SQL Editor:
 
-## That's It!
+```sql
+-- Add group_id column to profiles if it doesn't exist
+ALTER TABLE public.profiles ADD COLUMN IF NOT EXISTS group_id uuid;
 
-Your app now has a real database that:
-- ✅ Syncs across all devices
-- ✅ Works with your Vercel deployment
-- ✅ Has built-in authentication
-- ✅ Free tier is very generous (500MB database, 50,000 monthly users)
+-- Add foreign key if it doesn't exist  
+ALTER TABLE public.profiles 
+  DROP CONSTRAINT IF EXISTS profiles_group_id_fkey,
+  ADD CONSTRAINT profiles_group_id_fkey 
+  FOREIGN KEY (group_id) REFERENCES public.groups(id) ON DELETE SET NULL;
+
+-- Migrate existing group_members data (if any)
+UPDATE public.profiles p
+SET group_id = gm.group_id
+FROM public.group_members gm
+WHERE p.id = gm.user_id;
+```
+
+## Architecture Notes
+
+The app uses a simplified data model:
+- `profiles.group_id` stores which group a user belongs to (one group per user)
+- This is simpler and more reliable than a junction table approach
+- All group membership queries go through the profiles table directly

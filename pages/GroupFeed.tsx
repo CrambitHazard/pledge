@@ -18,22 +18,25 @@ const GroupFeed: React.FC = () => {
     loadData();
   }, [activeTab]);
 
-  const loadData = () => {
-    setFeed(api.getFeed());
-    setConfessions(api.getConfessions());
-    const group = api.getGroup();
+  const loadData = async () => {
+    const feedData = await api.getFeed();
+    setFeed(feedData || []);
+    const confessionData = await api.getConfessions();
+    setConfessions(confessionData || []);
+    const group = await api.getGroup();
     if (group?.dailyHeroId) {
-        setHero(api.getUserById(group.dailyHeroId) || null);
+        const heroUser = await api.getUserById(group.dailyHeroId);
+        setHero(heroUser || null);
     }
   };
 
-  const handleConfessionSubmit = (e: React.FormEvent) => {
+  const handleConfessionSubmit = async (e: React.FormEvent) => {
       e.preventDefault();
       if (!confessionText.trim()) return;
 
-      api.addConfession(confessionText);
+      await api.addConfession(confessionText);
       setConfessionText('');
-      loadData();
+      await loadData();
   };
 
   const getIcon = (type: FeedEvent['type']) => {

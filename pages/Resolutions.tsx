@@ -25,16 +25,21 @@ const Resolutions: React.FC = () => {
   });
 
   useEffect(() => {
-    setResolutions(api.getMyResolutions());
+    loadResolutions();
   }, []);
 
-  const handleCreate = (e: React.FormEvent) => {
+  const loadResolutions = async () => {
+    const data = await api.getMyResolutions();
+    setResolutions(data || []);
+  };
+
+  const handleCreate = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!formData.title.trim()) return;
     
     const subGoals = [formData.subGoal1, formData.subGoal2, formData.subGoal3].filter(s => s.trim() !== '');
 
-    api.addResolution({
+    await api.addResolution({
         title: formData.title,
         category: formData.category || 'General',
         type: formData.type,
@@ -44,7 +49,7 @@ const Resolutions: React.FC = () => {
         subGoals: subGoals
     });
     
-    setResolutions(api.getMyResolutions());
+    await loadResolutions();
     
     // Reset form
     setFormData({

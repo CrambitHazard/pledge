@@ -1,5 +1,8 @@
 -- Supabase Schema for Pledge App
 -- Run this in Supabase SQL Editor (Dashboard → SQL Editor → New Query)
+-- 
+-- IMPORTANT: Run this AFTER creating your Supabase project
+-- If you've already run an older version, run the migration at the bottom first
 
 -- ============================================
 -- PROFILES TABLE (extends auth.users)
@@ -9,6 +12,7 @@ create table if not exists public.profiles (
     name text not null,
     email text not null,
     avatar_initials text not null default 'U',
+    group_id uuid,  -- Direct reference to group (simpler than junction table)
     score integer not null default 0,
     monthly_score integer not null default 0,
     streak integer not null default 0,
@@ -29,25 +33,19 @@ create table if not exists public.groups (
     id uuid default gen_random_uuid() primary key,
     name text not null,
     invite_code text not null unique,
-    creator_id uuid references public.profiles(id) on delete set null,
+    creator_id uuid,
     admin_ids uuid[] default array[]::uuid[],
-    daily_hero_id uuid references public.profiles(id) on delete set null,
+    daily_hero_id uuid,
     last_hero_selection_date text,
-    weekly_comeback_hero_id uuid references public.profiles(id) on delete set null,
+    weekly_comeback_hero_id uuid,
     last_comeback_selection_date text,
     created_at timestamp with time zone default timezone('utc'::text, now()) not null
 );
 
--- ============================================
--- GROUP MEMBERS TABLE (junction table)
--- ============================================
-create table if not exists public.group_members (
-    id uuid default gen_random_uuid() primary key,
-    group_id uuid references public.groups(id) on delete cascade not null,
-    user_id uuid references public.profiles(id) on delete cascade not null,
-    joined_at timestamp with time zone default timezone('utc'::text, now()) not null,
-    unique(group_id, user_id)
-);
+-- Add foreign key after both tables exist
+alter table public.profiles 
+    add constraint profiles_group_id_fkey 
+    foreign key (group_id) references public.groups(id) on delete set null;
 
 -- ============================================
 -- RESOLUTIONS TABLE
@@ -118,11 +116,29 @@ create table if not exists public.confessions (
 -- Enable RLS on all tables
 alter table public.profiles enable row level security;
 alter table public.groups enable row level security;
-alter table public.group_members enable row level security;
 alter table public.resolutions enable row level security;
 alter table public.bets enable row level security;
 alter table public.feed_events enable row level security;
 alter table public.confessions enable row level security;
+
+-- Drop existing policies if they exist (for re-running)
+drop policy if exists "Users can view all profiles" on public.profiles;
+drop policy if exists "Users can update own profile" on public.profiles;
+drop policy if exists "Users can insert own profile" on public.profiles;
+drop policy if exists "Anyone can view groups" on public.groups;
+drop policy if exists "Authenticated users can create groups" on public.groups;
+drop policy if exists "Group admins can update groups" on public.groups;
+drop policy if exists "Users can view public resolutions" on public.resolutions;
+drop policy if exists "Users can create own resolutions" on public.resolutions;
+drop policy if exists "Users can update own resolutions" on public.resolutions;
+drop policy if exists "Users can delete own resolutions" on public.resolutions;
+drop policy if exists "Anyone can view bets" on public.bets;
+drop policy if exists "Users can create bets" on public.bets;
+drop policy if exists "Users can update own bets" on public.bets;
+drop policy if exists "Group members can view feed" on public.feed_events;
+drop policy if exists "Users can create feed events" on public.feed_events;
+drop policy if exists "Group members can view confessions" on public.confessions;
+drop policy if exists "Authenticated users can create confessions" on public.confessions;
 
 -- PROFILES policies
 create policy "Users can view all profiles" on public.profiles
@@ -141,18 +157,8 @@ create policy "Anyone can view groups" on public.groups
 create policy "Authenticated users can create groups" on public.groups
     for insert with check (auth.uid() is not null);
 
-create policy "Group admins can update groups" on public.groups
-    for update using (auth.uid() = creator_id or auth.uid() = any(admin_ids));
-
--- GROUP_MEMBERS policies
-create policy "Anyone can view group members" on public.group_members
-    for select using (true);
-
-create policy "Authenticated users can join groups" on public.group_members
-    for insert with check (auth.uid() = user_id);
-
-create policy "Users can leave groups" on public.group_members
-    for delete using (auth.uid() = user_id);
+create policy "Authenticated users can update groups" on public.groups
+    for update using (auth.uid() is not null);
 
 -- RESOLUTIONS policies
 create policy "Users can view public resolutions" on public.resolutions
@@ -184,7 +190,7 @@ create policy "Group members can view feed" on public.feed_events
 create policy "Users can create feed events" on public.feed_events
     for insert with check (auth.uid() = user_id);
 
--- CONFESSIONS policies (anonymous within group)
+-- CONFESSIONS policies
 create policy "Group members can view confessions" on public.confessions
     for select using (true);
 
@@ -217,8 +223,16 @@ create trigger on_auth_user_created
 -- ============================================
 -- INDEXES for performance
 -- ============================================
-create index if not exists idx_group_members_user on public.group_members(user_id);
-create index if not exists idx_group_members_group on public.group_members(group_id);
+create index if not exists idx_profiles_group on public.profiles(group_id);
 create index if not exists idx_resolutions_user on public.resolutions(user_id);
 create index if not exists idx_feed_events_group on public.feed_events(group_id);
 create index if not exists idx_groups_invite_code on public.groups(invite_code);
+
+-- ============================================
+-- MIGRATION: If you have existing data
+-- ============================================
+-- Run this if you already had the old schema:
+-- 
+-- ALTER TABLE public.profiles ADD COLUMN IF NOT EXISTS group_id uuid;
+-- ALTER TABLE public.profiles ADD CONSTRAINT profiles_group_id_fkey 
+--     FOREIGN KEY (group_id) REFERENCES public.groups(id) ON DELETE SET NULL;

@@ -11,19 +11,19 @@ const Leaderboard: React.FC = () => {
   const monthName = new Date().toLocaleString('default', { month: 'long' });
 
   useEffect(() => {
-    setUsers(api.getLeaderboard(view));
+    const loadData = async () => {
+      const data = await api.getLeaderboard(view);
+      setUsers(data || []);
+    };
+    loadData();
   }, [view]);
 
-  const getStatusIcon = (userId: string) => {
-      const status = api.getUserTodayStatus(userId);
-      switch(status) {
-          case 'checked': 
-            return <div title="All Public Goals Done" className="w-8 h-8 rounded-full bg-emerald-100 text-emerald-600 flex items-center justify-center"><CheckCircle2 size={18} /></div>;
-          case 'missed':
-            return <div title="Missed a Goal" className="w-8 h-8 rounded-full bg-rose-100 text-rose-600 flex items-center justify-center"><XCircle size={18} /></div>;
-          default:
-            return <div title="Pending" className="w-8 h-8 rounded-full bg-slate-100 text-slate-400 flex items-center justify-center"><Circle size={18} /></div>;
+  const getStatusIcon = (user: User) => {
+      // For now, just show based on streak
+      if (user.streak > 0) {
+          return <div title="Active Streak" className="w-8 h-8 rounded-full bg-emerald-100 text-emerald-600 flex items-center justify-center"><CheckCircle2 size={18} /></div>;
       }
+      return <div title="Pending" className="w-8 h-8 rounded-full bg-slate-100 text-slate-400 flex items-center justify-center"><Circle size={18} /></div>;
   };
 
   return (
@@ -148,7 +148,7 @@ const Leaderboard: React.FC = () => {
 
                     <div className="col-span-6 md:col-span-1 flex justify-center items-center">
                         <div className={isFirst ? "bg-white/20 p-1 rounded-full backdrop-blur-sm" : ""}>
-                            {getStatusIcon(user.id)}
+                            {getStatusIcon(user)}
                         </div>
                     </div>
                     

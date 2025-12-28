@@ -10,7 +10,11 @@ const Graveyard: React.FC = () => {
     const [archived, setArchived] = useState<Resolution[]>([]);
 
     useEffect(() => {
-        setArchived(api.getGraveyard());
+        const loadData = async () => {
+            const data = await api.getGraveyard();
+            setArchived(data || []);
+        };
+        loadData();
     }, []);
 
     return (

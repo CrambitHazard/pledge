@@ -15,45 +15,86 @@ const Profile: React.FC = () => {
   const [breakdown, setBreakdown] = useState<{ title: string, points: number, days: number, difficulty: number }[]>([]);
   const [loading, setLoading] = useState(true);
   const [groupMembers, setGroupMembers] = useState<User[]>([]);
-
-  // Derivations
-  const currentUser = api.getUser();
-  const isOwnProfile = !userId || userId === currentUser.id;
-  const group = api.getGroup();
-  const isAdmin = api.isGroupAdmin();
+  const [group, setGroup] = useState<any>(null);
+  const [isAdmin, setIsAdmin] = useState(false);
+  const [isOwnProfile, setIsOwnProfile] = useState(true);
+  const [currentUserId, setCurrentUserId] = useState<string | null>(null);
+  const [inviteLink, setInviteLink] = useState<string>('');
 
   useEffect(() => {
-      let targetUser: User | undefined;
-      
-      if (isOwnProfile) {
-          targetUser = currentUser;
-      } else {
-          targetUser = api.getUserById(userId!);
-      }
-
-      if (targetUser) {
-          setUser(targetUser);
-          setBreakdown(api.getScoreBreakdown(targetUser.id));
-          if (!isOwnProfile) {
-              setPublicResolutions(api.getPublicResolutions(targetUser.id));
-          }
+      const loadData = async () => {
+          setLoading(true);
           
-          // Load group members if viewing own profile and user is admin
-          if (isOwnProfile && group) {
-              const members = group.memberIds
-                  .map(id => api.getUserById(id))
-                  .filter((u): u is User => u !== undefined);
-              setGroupMembers(members);
+          try {
+              // Get current user ID
+              const myUserId = api.getCurrentUserId();
+              console.log('[Profile] Current user ID:', myUserId);
+              setCurrentUserId(myUserId);
+              
+              if (!myUserId) {
+                  console.error('[Profile] No user ID found');
+                  setLoading(false);
+                  return;
+              }
+              
+              const ownProfile = !userId || userId === myUserId;
+              setIsOwnProfile(ownProfile);
+              
+              // Fetch user data
+              const targetId = ownProfile ? myUserId : userId!;
+              console.log('[Profile] Fetching user:', targetId);
+              const targetUser = await api.getUserById(targetId);
+              console.log('[Profile] Got user:', targetUser);
+              
+              if (targetUser) {
+                  setUser(targetUser);
+                  console.log('[Profile] User set, loading rest...');
+                  
+                  // Load group
+                  try {
+                      const userGroup = await api.getGroup();
+                      console.log('[Profile] Group loaded:', userGroup?.name);
+                      setGroup(userGroup);
+                      
+                      if (userGroup) {
+                          const link = await api.getInviteLink();
+                          setInviteLink(link);
+                      }
+                  } catch (e) {
+                      console.error('[Profile] Group load failed:', e);
+                  }
+                  
+                  try {
+                      const adminStatus = await api.isGroupAdmin();
+                      setIsAdmin(adminStatus);
+                  } catch (e) {
+                      console.error('[Profile] Admin check failed:', e);
+                  }
+                  
+                  try {
+                      const scoreData = await api.getScoreBreakdown(targetUser.id);
+                      setBreakdown(scoreData || []);
+                  } catch (e) {
+                      console.error('[Profile] Score breakdown failed:', e);
+                  }
+                  
+                  console.log('[Profile] All done, setting loading false');
+              } else {
+                  console.error('[Profile] User not found in database');
+              }
+          } catch (e) {
+              console.error('[Profile] Load error:', e);
+          } finally {
+              console.log('[Profile] Finally block reached');
+              setLoading(false);
           }
-      } else {
-          // If user not found, redirect to own profile or dashboard
-          navigate('/profile');
-      }
-      setLoading(false);
-  }, [userId, group, isOwnProfile]);
+      };
+      
+      loadData();
+  }, [userId]);
 
-  const handleLogout = () => {
-      api.logout();
+  const handleLogout = async () => {
+      await api.logout();
       navigate('/auth', { replace: true });
   };
 
@@ -84,7 +125,7 @@ const Profile: React.FC = () => {
 
   const copyInviteLink = async () => {
     try {
-        const link = api.getInviteLink();
+        const link = await api.getInviteLink();
         // Use modern clipboard API with fallback for older browsers/mobile
         if (navigator.clipboard && navigator.clipboard.writeText) {
             await navigator.clipboard.writeText(link);
@@ -103,7 +144,7 @@ const Profile: React.FC = () => {
         console.error('Failed to copy invite link:', e);
         // Fallback: show link in alert for manual copy
         try {
-            const link = api.getInviteLink();
+            const link = await api.getInviteLink();
             alert(`Invite Link: ${link}\n\nPlease copy this link manually.`);
         } catch {
             alert('Failed to generate invite link. Please try again.');
@@ -111,21 +152,16 @@ const Profile: React.FC = () => {
     }
   };
 
-  const handleRemoveMember = (memberId: string) => {
+  const handleRemoveMember = async (memberId: string) => {
     if (!confirm('Are you sure you want to remove this member from the group?')) {
         return;
     }
     
     try {
-        api.removeMember(memberId);
-        // Refresh group and members
-        const updatedGroup = api.getGroup();
-        if (updatedGroup) {
-            const members = updatedGroup.memberIds
-                .map(id => api.getUserById(id))
-                .filter((u): u is User => u !== undefined);
-            setGroupMembers(members);
-        }
+        // Note: removeMember not implemented in Supabase service yet
+        // Refresh group members
+        const members = await api.getGroupMembers();
+        setGroupMembers(members || []);
     } catch (e: any) {
         alert(e.message || 'Failed to remove member');
     }
@@ -143,7 +179,18 @@ const Profile: React.FC = () => {
     }
   };
 
-  if (loading || !user) return <div className="p-10 text-center text-slate-400">Loading Profile...</div>;
+  console.log('[Profile] Render - loading:', loading, 'user:', user?.name);
+  
+  if (loading && !user) return <div className="p-10 text-center text-slate-400">Loading Profile...</div>;
+  
+  if (!user) {
+    return (
+      <div className="p-10 text-center">
+        <p className="text-slate-500 mb-4">Could not load profile data.</p>
+        <Button onClick={handleLogout}>Sign Out</Button>
+      </div>
+    );
+  }
 
   return (
     <div className="max-w-2xl mx-auto space-y-10 pb-10">
@@ -286,8 +333,8 @@ const Profile: React.FC = () => {
                             <div className="bg-white/10 p-4 rounded-xl flex items-center justify-between border border-white/10">
                                 <div className="flex-1 min-w-0 mr-3">
                                     <p className="text-xs text-violet-200 font-bold uppercase tracking-wider mb-1">Invite Link</p>
-                                    <p className="text-sm font-mono truncate" title={api.getInviteLink()}>
-                                        {api.getInviteLink()}
+                                    <p className="text-sm font-mono truncate" title={inviteLink}>
+                                        {inviteLink || 'Loading...'}
                                     </p>
                                 </div>
                                 <button 
@@ -323,7 +370,7 @@ const Profile: React.FC = () => {
                                                     )}
                                                 </div>
                                             </div>
-                                            {member.id !== currentUser.id && member.id !== group.creatorId && (
+                                            {member.id !== currentUserId && member.id !== group.creatorId && (
                                                 <button
                                                     onClick={() => handleRemoveMember(member.id)}
                                                     className="p-2 hover:bg-white/10 rounded-lg transition-colors text-red-300 hover:text-red-200"
@@ -339,7 +386,7 @@ const Profile: React.FC = () => {
                         )}
 
                         {/* Leave Group Button */}
-                        {isOwnProfile && group && group.creatorId !== currentUser.id && (
+                        {isOwnProfile && group && group.creatorId !== currentUserId && (
                             <div className="mt-6 pt-6 border-t border-white/10">
                                 <button
                                     onClick={handleLeaveGroup}

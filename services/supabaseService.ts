@@ -3,6 +3,9 @@
  * 
  * Backend service using Supabase for authentication and data storage.
  * Data syncs across all devices automatically.
+ * 
+ * Uses simplified model: group_id is stored directly in profiles table,
+ * avoiding junction table complexity.
  */
 
 import { createClient, User as SupabaseUser } from '@supabase/supabase-js';
@@ -20,12 +23,12 @@ import {
     IdentityLabel,
 } from '../types';
 
-// Supabase client - configure URL and anon key from environment
+// Supabase client configuration
 const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL || '';
 const SUPABASE_ANON_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY || '';
 
 if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
-    console.warn('Supabase credentials not configured. Please set VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY');
+    console.error('❌ Supabase not configured. Set VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY in .env.local');
 }
 
 export const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
@@ -82,13 +85,14 @@ const calculateStreak = (history: Record<string, ResolutionStatus>, todayStatus:
     return streak;
 };
 
-// --- Type Conversions ---
+// --- Type Definitions ---
 
 interface DBProfile {
     id: string;
     name: string;
     email: string;
     avatar_initials: string;
+    group_id: string | null;  // Direct group reference
     score: number;
     monthly_score: number;
     streak: number;
@@ -146,12 +150,25 @@ interface DBFeedEvent {
     profiles?: DBProfile;
 }
 
-const dbProfileToUser = (p: DBProfile, groupId?: string): User => ({
+interface DBBet {
+    id: string;
+    resolution_id: string;
+    user_id: string;
+    created_at: string;
+    start_date: string;
+    end_date: string;
+    stake: string;
+    status: 'ACTIVE' | 'WON' | 'LOST';
+}
+
+// --- Type Conversions ---
+
+const dbProfileToUser = (p: DBProfile): User => ({
     id: p.id,
     name: p.name,
     email: p.email,
     avatarInitials: p.avatar_initials,
-    groupId,
+    groupId: p.group_id || undefined,
     score: p.score,
     monthlyScore: p.monthly_score,
     streak: p.streak,
@@ -198,6 +215,17 @@ const dbResolutionToResolution = (r: DBResolution): Resolution => ({
     bets: [],
     archivedAt: r.archived_at || undefined,
     archivedReason: r.archived_reason || undefined,
+});
+
+const dbBetToBet = (b: DBBet): Bet => ({
+    id: b.id,
+    resolutionId: b.resolution_id,
+    userId: b.user_id,
+    createdAt: b.created_at,
+    startDate: b.start_date,
+    endDate: b.end_date,
+    stake: b.stake,
+    status: b.status,
 });
 
 // --- Invite Code Normalization ---
@@ -269,47 +297,49 @@ export const api = {
 
     // --- Auth ---
 
-    isAuthenticated: (): boolean => {
-        return !!supabase.auth.getSession();
-    },
-
     getCurrentUserId: (): string | null => {
-        // This is async in Supabase, but we cache it
-        const session = localStorage.getItem('sb-session-user-id');
-        return session;
+        return localStorage.getItem('sb-session-user-id');
     },
 
-    getUser: (): User => {
+    getUser: (): User | null => {
         const cached = localStorage.getItem('sb-cached-user');
         if (cached) {
-            return JSON.parse(cached);
+            try {
+                return JSON.parse(cached);
+            } catch {
+                return null;
+            }
         }
-        throw new Error('Not authenticated');
+        return null;
     },
 
     getUserById: async (id: string): Promise<User | undefined> => {
+        console.log('[Supabase] getUserById:', id);
         const { data, error } = await supabase
             .from('profiles')
             .select('*')
             .eq('id', id)
             .single();
-        if (error || !data) return undefined;
-
-        const { data: membership } = await supabase
-            .from('group_members')
-            .select('group_id')
-            .eq('user_id', id)
-            .single();
-
-        return dbProfileToUser(data, membership?.group_id);
+        
+        if (error) {
+            console.error('[Supabase] getUserById error:', error);
+            return undefined;
+        }
+        if (!data) {
+            console.log('[Supabase] getUserById: no data');
+            return undefined;
+        }
+        console.log('[Supabase] getUserById success:', data.name);
+        return dbProfileToUser(data);
     },
 
     login: async (email: string, password: string): Promise<boolean> => {
         const { data, error } = await supabase.auth.signInWithPassword({ email, password });
         if (error || !data.user) {
-            console.error('Login error:', error);
-            return false;
+            console.error('[Auth] Login failed:', error?.message);
+            throw new Error(error?.message || 'Login failed');
         }
+        
         localStorage.setItem('sb-session-user-id', data.user.id);
         await api._cacheCurrentUser(data.user.id);
         return true;
@@ -321,13 +351,38 @@ export const api = {
             password,
             options: { data: { name } }
         });
-        if (error || !data.user) {
-            console.error('Signup error:', error);
-            return false;
+        
+        if (error) {
+            console.error('[Auth] Signup failed:', error.message);
+            throw new Error(error.message);
         }
+        
+        if (!data.user) {
+            throw new Error('Signup failed - no user returned');
+        }
+        
         localStorage.setItem('sb-session-user-id', data.user.id);
-        // Wait a moment for the trigger to create the profile
+        
+        // Wait briefly for the trigger to create profile
         await new Promise(resolve => setTimeout(resolve, 500));
+        
+        // Check if profile exists, create if not
+        const { data: profile } = await supabase
+            .from('profiles')
+            .select('id')
+            .eq('id', data.user.id)
+            .single();
+        
+        if (!profile) {
+            // Create profile manually if trigger didn't work
+            await supabase.from('profiles').insert({
+                id: data.user.id,
+                name: name,
+                email: email,
+                avatar_initials: name.substring(0, 2).toUpperCase(),
+            });
+        }
+        
         await api._cacheCurrentUser(data.user.id);
         return true;
     },
@@ -346,33 +401,31 @@ export const api = {
             .single();
 
         if (profile) {
-            const { data: membership } = await supabase
-                .from('group_members')
-                .select('group_id')
-                .eq('user_id', userId)
-                .single();
-
-            const user = dbProfileToUser(profile, membership?.group_id);
+            const user = dbProfileToUser(profile);
             localStorage.setItem('sb-cached-user', JSON.stringify(user));
         }
     },
 
-    // --- Groups ---
+    // --- Groups (Simplified: group_id directly on profiles) ---
 
     createGroup: async (name: string): Promise<Group> => {
         const userId = api.getCurrentUserId();
         if (!userId) throw new Error('Not authenticated');
 
-        const { data: existing } = await supabase
-            .from('group_members')
-            .select('id')
-            .eq('user_id', userId)
+        // Check if user already in a group
+        const { data: profile } = await supabase
+            .from('profiles')
+            .select('group_id')
+            .eq('id', userId)
             .single();
 
-        if (existing) throw new Error('User already in a group');
+        if (profile?.group_id) {
+            throw new Error('You are already in a group');
+        }
 
+        // Create the group
         const inviteCode = Math.random().toString(36).substring(2, 8).toUpperCase();
-
+        
         const { data: group, error } = await supabase
             .from('groups')
             .insert({
@@ -384,14 +437,27 @@ export const api = {
             .select()
             .single();
 
-        if (error || !group) throw new Error(error?.message || 'Failed to create group');
+        if (error || !group) {
+            console.error('[Group] Failed to create:', error);
+            throw new Error(error?.message || 'Failed to create group');
+        }
 
-        await supabase.from('group_members').insert({
-            group_id: group.id,
-            user_id: userId,
-        });
+        // Update user's profile with group_id
+        const { error: updateError } = await supabase
+            .from('profiles')
+            .update({ group_id: group.id })
+            .eq('id', userId);
 
+        if (updateError) {
+            console.error('[Group] Failed to update profile:', updateError);
+            // Rollback: delete the group
+            await supabase.from('groups').delete().eq('id', group.id);
+            throw new Error('Failed to join the group you created');
+        }
+
+        // Update cache
         await api._cacheCurrentUser(userId);
+
         return dbGroupToGroup(group, [userId]);
     },
 
@@ -399,71 +465,87 @@ export const api = {
         const userId = api.getCurrentUserId();
         if (!userId) throw new Error('Not authenticated');
 
-        const { data: existing } = await supabase
-            .from('group_members')
-            .select('id')
-            .eq('user_id', userId)
+        // Check if already in a group
+        const { data: profile } = await supabase
+            .from('profiles')
+            .select('group_id')
+            .eq('id', userId)
             .single();
 
-        if (existing) throw new Error('User already in a group');
+        if (profile?.group_id) {
+            throw new Error('You are already in a group');
+        }
 
         const normalizedCode = normalizeInviteCode(inviteCode);
         if (!normalizedCode || normalizedCode.length < 4) {
             throw new Error('Invalid invite code format');
         }
 
-        // Find group - Supabase is case-sensitive, so we need ilike
-        const { data: groups } = await supabase
+        // Find group by invite code (case-insensitive)
+        const { data: groups, error: findError } = await supabase
             .from('groups')
             .select('*')
             .ilike('invite_code', normalizedCode);
 
-        if (!groups || groups.length === 0) {
-            throw new Error(`Invalid invite code "${normalizedCode}". Please check and try again.`);
+        if (findError || !groups || groups.length === 0) {
+            throw new Error(`Invalid invite code "${normalizedCode}"`);
         }
 
         const group = groups[0];
 
-        await supabase.from('group_members').insert({
-            group_id: group.id,
-            user_id: userId,
-        });
+        // Update user's profile with group_id
+        const { error: updateError } = await supabase
+            .from('profiles')
+            .update({ group_id: group.id })
+            .eq('id', userId);
 
+        if (updateError) {
+            console.error('[Group] Failed to join:', updateError);
+            throw new Error('Failed to join group');
+        }
+
+        // Update cache
+        await api._cacheCurrentUser(userId);
+
+        // Get all members
         const { data: members } = await supabase
-            .from('group_members')
-            .select('user_id')
+            .from('profiles')
+            .select('id')
             .eq('group_id', group.id);
 
-        await api._cacheCurrentUser(userId);
-        return dbGroupToGroup(group, members?.map(m => m.user_id) || []);
+        return dbGroupToGroup(group, members?.map(m => m.id) || [userId]);
     },
 
     leaveGroup: async (): Promise<void> => {
         const userId = api.getCurrentUserId();
         if (!userId) throw new Error('Not authenticated');
 
-        const { data: membership } = await supabase
-            .from('group_members')
+        const { data: profile } = await supabase
+            .from('profiles')
             .select('group_id')
-            .eq('user_id', userId)
+            .eq('id', userId)
             .single();
 
-        if (!membership) throw new Error('Not in a group');
+        if (!profile?.group_id) {
+            throw new Error('Not in a group');
+        }
 
+        // Check if user is creator
         const { data: group } = await supabase
             .from('groups')
             .select('creator_id')
-            .eq('id', membership.group_id)
+            .eq('id', profile.group_id)
             .single();
 
         if (group?.creator_id === userId) {
-            throw new Error('Group creator cannot leave. Transfer ownership first.');
+            throw new Error('Group creator cannot leave. Delete the group instead.');
         }
 
+        // Remove group_id from profile
         await supabase
-            .from('group_members')
-            .delete()
-            .eq('user_id', userId);
+            .from('profiles')
+            .update({ group_id: null })
+            .eq('id', userId);
 
         await api._cacheCurrentUser(userId);
     },
@@ -472,73 +554,65 @@ export const api = {
         const userId = api.getCurrentUserId();
         if (!userId) return null;
 
-        const { data: membership } = await supabase
-            .from('group_members')
+        // Get user's group_id directly from profile
+        const { data: profile, error: profileError } = await supabase
+            .from('profiles')
             .select('group_id')
-            .eq('user_id', userId)
+            .eq('id', userId)
             .single();
 
-        if (!membership) return null;
+        if (profileError || !profile?.group_id) {
+            return null;
+        }
 
-        const { data: group } = await supabase
+        // Get group details
+        const { data: group, error: groupError } = await supabase
             .from('groups')
             .select('*')
-            .eq('id', membership.group_id)
+            .eq('id', profile.group_id)
             .single();
 
-        if (!group) return null;
+        if (groupError || !group) {
+            return null;
+        }
 
+        // Get all members of this group
         const { data: members } = await supabase
-            .from('group_members')
-            .select('user_id')
+            .from('profiles')
+            .select('id')
             .eq('group_id', group.id);
 
-        return dbGroupToGroup(group, members?.map(m => m.user_id) || []);
+        return dbGroupToGroup(group, members?.map(m => m.id) || [userId]);
     },
 
     getInviteLink: async (): Promise<string> => {
-        const userId = api.getCurrentUserId();
-        if (!userId) throw new Error('Not authenticated');
-
-        const { data: membership } = await supabase
-            .from('group_members')
-            .select('group_id')
-            .eq('user_id', userId)
-            .single();
-
-        if (!membership) throw new Error('Not in a group');
-
-        const { data: group } = await supabase
-            .from('groups')
-            .select('invite_code')
-            .eq('id', membership.group_id)
-            .single();
-
-        if (!group) throw new Error('Group not found');
+        const group = await api.getGroup();
+        if (!group) throw new Error('Not in a group');
 
         const baseUrl = window.location.origin + window.location.pathname;
-        return `${baseUrl.replace(/\/$/, '')}?invite=${encodeURIComponent(group.invite_code)}`;
+        return `${baseUrl.replace(/\/$/, '')}?invite=${encodeURIComponent(group.inviteCode)}`;
     },
 
     isGroupAdmin: async (): Promise<boolean> => {
         const userId = api.getCurrentUserId();
         if (!userId) return false;
 
-        const { data: membership } = await supabase
-            .from('group_members')
-            .select('group_id')
-            .eq('user_id', userId)
-            .single();
+        const group = await api.getGroup();
+        if (!group) return false;
 
-        if (!membership) return false;
+        return group.creatorId === userId || group.adminIds.includes(userId);
+    },
 
-        const { data: group } = await supabase
-            .from('groups')
-            .select('creator_id, admin_ids')
-            .eq('id', membership.group_id)
-            .single();
+    getGroupMembers: async (): Promise<User[]> => {
+        const group = await api.getGroup();
+        if (!group) return [];
 
-        return group?.creator_id === userId || group?.admin_ids?.includes(userId);
+        const { data: profiles } = await supabase
+            .from('profiles')
+            .select('*')
+            .eq('group_id', group.id);
+
+        return (profiles || []).map(dbProfileToUser);
     },
 
     // --- Resolutions ---
@@ -576,7 +650,24 @@ export const api = {
             .eq('id', id)
             .single();
 
-        return data ? dbResolutionToResolution(data) : undefined;
+        if (!data) return undefined;
+
+        const res = dbResolutionToResolution(data as unknown as DBResolution);
+
+        // Load bets for this resolution
+        const { data: betsData, error: betsError } = await supabase
+            .from('bets')
+            .select('*')
+            .eq('resolution_id', id)
+            .order('created_at', { ascending: false });
+
+        if (betsError) {
+            console.error('[Supabase] getResolutionById bets error:', betsError);
+        } else {
+            res.bets = (betsData || []).map((b: DBBet) => dbBetToBet(b));
+        }
+
+        return res;
     },
 
     getGraveyard: async (): Promise<Resolution[]> => {
@@ -594,40 +685,29 @@ export const api = {
     },
 
     getPublicResolutionsForGroup: async (): Promise<{ user: User; resolutions: Resolution[] }[]> => {
-        const userId = api.getCurrentUserId();
-        if (!userId) return [];
+        const group = await api.getGroup();
+        if (!group) return [];
 
-        const { data: membership } = await supabase
-            .from('group_members')
-            .select('group_id')
-            .eq('user_id', userId)
-            .single();
+        const { data: profiles } = await supabase
+            .from('profiles')
+            .select('*')
+            .eq('group_id', group.id);
 
-        if (!membership) return [];
-
-        const { data: members } = await supabase
-            .from('group_members')
-            .select('user_id, profiles(*)')
-            .eq('group_id', membership.group_id);
-
-        if (!members) return [];
+        if (!profiles) return [];
 
         const results: { user: User; resolutions: Resolution[] }[] = [];
 
-        for (const member of members) {
-            const profile = member.profiles as unknown as DBProfile;
-            if (!profile) continue;
-
+        for (const profile of profiles) {
             const { data: resolutions } = await supabase
                 .from('resolutions')
                 .select('*')
-                .eq('user_id', member.user_id)
+                .eq('user_id', profile.id)
                 .eq('is_private', false)
                 .is('archived_at', null);
 
             if (resolutions && resolutions.length > 0) {
                 results.push({
-                    user: dbProfileToUser(profile, membership.group_id),
+                    user: dbProfileToUser(profile),
                     resolutions: resolutions.map(dbResolutionToResolution),
                 });
             }
@@ -733,24 +813,129 @@ export const api = {
             .eq('id', resolutionId);
     },
 
+    // --- Bets ---
+
+    /**
+     * Creates a new bet for a resolution owned by the current user.
+     *
+     * Args:
+     *   resolutionId: Resolution ID to bet on.
+     *   endDate: ISO date string (YYYY-MM-DD) representing bet end date.
+     *   stake: The penalty text if the bet is lost.
+     *
+     * Returns:
+     *   The created bet.
+     *
+     * Raises:
+     *   Error: If not authenticated, resolution is invalid, or bet creation fails.
+     */
+    addBet: async (resolutionId: string, endDate: string, stake: string): Promise<Bet> => {
+        const userId = api.getCurrentUserId();
+        if (!userId) throw new Error('Not authenticated');
+
+        const trimmedStake = stake.trim();
+        if (!trimmedStake) throw new Error('Stake is required');
+
+        const startDate = getTodayKey();
+        if (!endDate) throw new Error('End date is required');
+
+        // Basic date sanity (allow same-day bets, but not past)
+        const end = new Date(endDate);
+        const start = new Date(startDate);
+        start.setHours(0, 0, 0, 0);
+        end.setHours(0, 0, 0, 0);
+        if (Number.isNaN(end.getTime())) throw new Error('Invalid end date');
+        if (end < start) throw new Error('End date must be today or later');
+
+        // Ensure resolution exists and is owned by the current user
+        const { data: resolutionRow, error: resError } = await supabase
+            .from('resolutions')
+            .select('id, user_id, is_private')
+            .eq('id', resolutionId)
+            .single();
+
+        if (resError || !resolutionRow) {
+            console.error('[Supabase] addBet resolution fetch error:', resError);
+            throw new Error('Resolution not found');
+        }
+        if (resolutionRow.user_id !== userId) {
+            throw new Error('You can only bet on your own resolution');
+        }
+        if (resolutionRow.is_private) {
+            throw new Error('Bets are only allowed on public resolutions');
+        }
+
+        // Prevent multiple active bets per resolution per user
+        const { data: existingActive, error: existingError } = await supabase
+            .from('bets')
+            .select('id')
+            .eq('resolution_id', resolutionId)
+            .eq('user_id', userId)
+            .eq('status', 'ACTIVE')
+            .limit(1);
+
+        if (existingError) {
+            console.error('[Supabase] addBet existing bet check error:', existingError);
+        }
+        if (existingActive && existingActive.length > 0) {
+            throw new Error('You already have an active bet on this resolution');
+        }
+
+        const { data: betRow, error } = await supabase
+            .from('bets')
+            .insert({
+                resolution_id: resolutionId,
+                user_id: userId,
+                start_date: startDate,
+                end_date: endDate,
+                stake: trimmedStake,
+                status: 'ACTIVE',
+            })
+            .select('*')
+            .single();
+
+        if (error || !betRow) {
+            console.error('[Supabase] addBet insert error:', error);
+            throw new Error(error?.message || 'Failed to create bet');
+        }
+
+        return dbBetToBet(betRow as DBBet);
+    },
+
+    /**
+     * Fetches bets for a resolution.
+     *
+     * Args:
+     *   resolutionId: Resolution ID.
+     *
+     * Returns:
+     *   Bets for that resolution, newest first.
+     */
+    getBetsForResolution: async (resolutionId: string): Promise<Bet[]> => {
+        const { data, error } = await supabase
+            .from('bets')
+            .select('*')
+            .eq('resolution_id', resolutionId)
+            .order('created_at', { ascending: false });
+
+        if (error) {
+            console.error('[Supabase] getBetsForResolution error:', error);
+            return [];
+        }
+
+        return (data || []).map((b: DBBet) => dbBetToBet(b));
+    },
+
     // --- Feed ---
 
     getFeed: async (): Promise<FeedEvent[]> => {
-        const userId = api.getCurrentUserId();
-        if (!userId) return [];
-
-        const { data: membership } = await supabase
-            .from('group_members')
-            .select('group_id')
-            .eq('user_id', userId)
-            .single();
-
-        if (!membership) return [];
+        const group = await api.getGroup();
+        if (!group) return [];
 
         const { data } = await supabase
             .from('feed_events')
             .select('*, profiles:user_id(*)')
-            .eq('group_id', membership.group_id)
+            .eq('group_id', group.id)
             .order('created_at', { ascending: false })
             .limit(50);
 
@@ -769,18 +954,13 @@ export const api = {
         const userId = api.getCurrentUserId();
         if (!userId) return;
 
-        const { data: membership } = await supabase
-            .from('group_members')
-            .select('group_id')
-            .eq('user_id', userId)
-            .single();
-
-        if (!membership) return;
+        const group = await api.getGroup();
+        if (!group) return;
 
         await supabase.from('feed_events').insert({
             type,
             user_id: userId,
-            group_id: membership.group_id,
+            group_id: group.id,
             message,
         });
     },
@@ -788,39 +968,23 @@ export const api = {
     // --- Confessions ---
 
     addConfession: async (text: string): Promise<void> => {
-        const userId = api.getCurrentUserId();
-        if (!userId) throw new Error('Not authenticated');
-
-        const { data: membership } = await supabase
-            .from('group_members')
-            .select('group_id')
-            .eq('user_id', userId)
-            .single();
-
-        if (!membership) throw new Error('Not in a group');
+        const group = await api.getGroup();
+        if (!group) throw new Error('Not in a group');
 
         await supabase.from('confessions').insert({
-            group_id: membership.group_id,
+            group_id: group.id,
             text,
         });
     },
 
     getConfessions: async (): Promise<Confession[]> => {
-        const userId = api.getCurrentUserId();
-        if (!userId) return [];
-
-        const { data: membership } = await supabase
-            .from('group_members')
-            .select('group_id')
-            .eq('user_id', userId)
-            .single();
-
-        if (!membership) return [];
+        const group = await api.getGroup();
+        if (!group) return [];
 
         const { data } = await supabase
             .from('confessions')
             .select('*')
-            .eq('group_id', membership.group_id)
+            .eq('group_id', group.id)
             .order('created_at', { ascending: false });
 
         return (data || []).map(c => ({
@@ -834,30 +998,17 @@ export const api = {
     // --- Leaderboard ---
 
     getLeaderboard: async (period: 'ALL' | 'MONTHLY' = 'ALL'): Promise<User[]> => {
-        const userId = api.getCurrentUserId();
-        if (!userId) return [];
+        const group = await api.getGroup();
+        if (!group) return [];
 
-        const { data: membership } = await supabase
-            .from('group_members')
-            .select('group_id')
-            .eq('user_id', userId)
-            .single();
+        const { data: profiles } = await supabase
+            .from('profiles')
+            .select('*')
+            .eq('group_id', group.id);
 
-        if (!membership) return [];
+        if (!profiles) return [];
 
-        const { data: members } = await supabase
-            .from('group_members')
-            .select('user_id, profiles(*)')
-            .eq('group_id', membership.group_id);
-
-        if (!members) return [];
-
-        const users = members
-            .map(m => {
-                const profile = m.profiles as unknown as DBProfile;
-                return profile ? dbProfileToUser(profile, membership.group_id) : null;
-            })
-            .filter((u): u is User => u !== null);
+        const users = profiles.map(dbProfileToUser);
 
         users.sort((a, b) => {
             const scoreA = period === 'MONTHLY' ? a.monthlyScore : a.score;
@@ -937,7 +1088,7 @@ export const api = {
         return getDaysSince(res.createdAt) < 7;
     },
 
-    // --- Reports (simplified) ---
+    // --- Reports ---
 
     getWeeklyReport: async (userId: string): Promise<PeriodicReport> => {
         return {

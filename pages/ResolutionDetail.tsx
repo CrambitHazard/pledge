@@ -26,13 +26,13 @@ const ResolutionDetail: React.FC = () => {
     loadData();
   }, [id]);
 
-  const loadData = () => {
+  const loadData = async () => {
     if (id) {
-        const res = api.getResolutionById(id);
+        const res = await api.getResolutionById(id);
         if (res) {
             const user = api.getUser();
             setCurrentUser(user);
-            if (res.createdUserId === user.id || !res.isPrivate) {
+            if (res.createdUserId === user?.id || !res.isPrivate) {
                 setResolution(res);
             } else {
                 navigate('/resolutions');
@@ -41,37 +41,37 @@ const ResolutionDetail: React.FC = () => {
       }
   };
 
-  const handleCreateBet = (e: React.FormEvent) => {
+  const handleCreateBet = async (e: React.FormEvent) => {
       e.preventDefault();
       setBetError('');
       if (!id || !betEndDate || !betStake) return;
 
       try {
-          api.addBet(id, betEndDate, betStake);
+          await api.addBet(id, betEndDate, betStake);
           setShowBetForm(false);
           setBetEndDate('');
           setBetStake('');
-          loadData();
+          await loadData();
       } catch (err: any) {
           setBetError(err.message);
       }
   };
   
-  const handleArchive = () => {
+  const handleArchive = async () => {
       if(!id || !archiveReason) return;
       try {
-          api.archiveResolution(id, archiveReason);
+          await api.archiveResolution(id, archiveReason);
           navigate('/graveyard');
       } catch(e: any) {
           alert(e.message);
       }
   }
 
-  const handleDifficultyVote = (vote: 1|2|3|4|5) => {
+  const handleDifficultyVote = async (vote: 1|2|3|4|5) => {
       if (!id) return;
       try {
-          api.voteDifficulty(id, vote);
-          loadData();
+          await api.voteDifficulty(id, vote);
+          await loadData();
       } catch (e) {
           console.error(e);
       }

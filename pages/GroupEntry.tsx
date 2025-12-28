@@ -107,10 +107,10 @@ const GroupEntry: React.FC = () => {
     
     try {
       await api.createGroup(groupName);
-      navigate('/');
+      // Force reload to pick up new group state
+      window.location.href = '/';
     } catch (err: any) {
       setError(err.message || 'Failed to create group');
-    } finally {
       setIsLoading(false);
     }
   };
@@ -136,7 +136,8 @@ const GroupEntry: React.FC = () => {
     
     try {
       await api.joinGroup(finalCode);
-      navigate('/', { replace: true });
+      // Force reload to pick up new group state
+      window.location.href = '/';
     } catch (err: any) {
       const errorMsg = err.message || 'Failed to join group. Please check the invite code and try again.';
       setError(errorMsg);

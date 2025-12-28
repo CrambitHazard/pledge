@@ -16,14 +16,15 @@ const DailyCheckIn: React.FC = () => {
     setCurrentDate(now.toLocaleDateString('en-US', options));
   }, []);
 
-  const loadData = () => {
-    setResolutions(api.getMyResolutions());
+  const loadData = async () => {
+    const data = await api.getMyResolutions();
+    setResolutions(data || []);
   };
 
-  const handleCheckIn = (id: string, status: ResolutionStatus, e: React.MouseEvent) => {
-    e.stopPropagation(); // Prevent card click if button clicked
-    api.checkIn(id, status);
-    loadData();
+  const handleCheckIn = async (id: string, status: ResolutionStatus, e: React.MouseEvent) => {
+    e.stopPropagation();
+    await api.checkIn(id, status);
+    await loadData();
   };
 
   const getCardStyles = (status: ResolutionStatus) => {
