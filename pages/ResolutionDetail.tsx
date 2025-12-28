@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { api } from '../services/supabaseService';
-import { Resolution, ResolutionType, ResolutionStatus, Bet } from '../types';
+import { Resolution, ResolutionType, ResolutionStatus, Bet, User } from '../types';
 import Button from '../components/Button';
 import Input from '../components/Input';
 import { ArrowLeft, Calendar, Flame, Activity, CheckSquare, Lock, Globe, Shield, CheckCircle2, XCircle, Minus, Trophy, AlertTriangle, ThumbsUp, ThumbsDown, BarChart2, User as UserIcon, Archive, AlertOctagon } from 'lucide-react';
@@ -10,7 +10,8 @@ const ResolutionDetail: React.FC = () => {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
   const [resolution, setResolution] = useState<Resolution | null>(null);
-  const [currentUser, setCurrentUser] = useState(api.getUser());
+  const [currentUser, setCurrentUser] = useState<User | null>(api.getUser());
+  const [loadError, setLoadError] = useState<string>('');
   
   // Betting State
   const [showBetForm, setShowBetForm] = useState(false);
@@ -27,18 +28,37 @@ const ResolutionDetail: React.FC = () => {
   }, [id]);
 
   const loadData = async () => {
-    if (id) {
+    if (!id) return;
+    setLoadError('');
+
+    try {
+        // Ensure current user is available even if cache is empty
+        const myUserId = api.getCurrentUserId();
+        let user = api.getUser();
+        if (!user && myUserId) {
+            user = (await api.getUserById(myUserId)) || null;
+        }
+        setCurrentUser(user);
+
         const res = await api.getResolutionById(id);
-        if (res) {
-            const user = api.getUser();
-            setCurrentUser(user);
-            if (res.createdUserId === user?.id || !res.isPrivate) {
-                setResolution(res);
-            } else {
-                navigate('/resolutions');
-            }
-        } 
-      }
+        if (!res) {
+            setResolution(null);
+            setLoadError('Resolution not found (or no access).');
+            return;
+        }
+
+        // Allow viewing if owner OR public
+        const isOwner = !!user?.id && res.createdUserId === user.id;
+        if (isOwner || !res.isPrivate) {
+            setResolution(res);
+        } else {
+            navigate('/resolutions');
+        }
+    } catch (e: any) {
+        console.error('[ResolutionDetail] loadData error:', e);
+        setResolution(null);
+        setLoadError(e?.message || 'Failed to load resolution');
+    }
   };
 
   const handleCreateBet = async (e: React.FormEvent) => {
@@ -77,17 +97,22 @@ const ResolutionDetail: React.FC = () => {
       }
   };
 
-  const handleCredibilityVote = (date: string, type: 'BELIEVE' | 'DOUBT') => {
+  const handleCredibilityVote = async (date: string, type: 'BELIEVE' | 'DOUBT') => {
       if (!id) return;
       try {
-          api.voteCredibility(id, date, type);
-          loadData();
+          await api.voteCredibility(id, date, type);
+          await loadData();
       } catch (e) {
           console.error(e);
       }
   };
 
-  if (!resolution) return <div className="p-10 text-center text-slate-400">Loading...</div>;
+  if (!resolution) {
+      if (loadError) {
+          return <div className="p-10 text-center text-rose-600 font-bold">{loadError}</div>;
+      }
+      return <div className="p-10 text-center text-slate-400">Loading...</div>;
+  }
 
   const historyDays = [];
   for (let i = 0; i < 7; i++) {
@@ -98,7 +123,8 @@ const ResolutionDetail: React.FC = () => {
 
   const activeBet = resolution.bets?.find(b => b.status === 'ACTIVE');
   const pastBets = resolution.bets?.filter(b => b.status !== 'ACTIVE') || [];
-  const isOwner = resolution.createdUserId === currentUser.id;
+  const currentUserId = currentUser?.id || api.getCurrentUserId() || '';
+  const isOwner = !!currentUserId && resolution.createdUserId === currentUserId;
   const isPublic = !resolution.isPrivate;
   const health = api.getResolutionHealth(resolution);
   const isLocked = api.isResolutionLocked(resolution);
@@ -116,7 +142,8 @@ const ResolutionDetail: React.FC = () => {
   const hasVotedCredibility = (date: string) => {
       const votes = resolution.credibility?.[date];
       if (!votes) return false;
-      return votes.believers.includes(currentUser.id) || votes.doubters.includes(currentUser.id);
+      if (!currentUserId) return false;
+      return votes.believers.includes(currentUserId) || votes.doubters.includes(currentUserId);
   };
 
   return (
@@ -217,7 +244,7 @@ const ResolutionDetail: React.FC = () => {
                                 key={lvl}
                                 onClick={() => handleDifficultyVote(lvl as any)}
                                 className={`flex-1 py-2 rounded-lg font-bold text-sm transition-all ${
-                                    resolution.peerDifficultyVotes?.[currentUser.id] === lvl
+                                    (currentUserId ? resolution.peerDifficultyVotes?.[currentUserId] : undefined) === lvl
                                     ? 'bg-violet-600 text-white shadow-md'
                                     : 'bg-white text-slate-400 hover:bg-slate-100 border border-slate-200'
                                 }`}

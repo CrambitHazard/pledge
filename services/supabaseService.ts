@@ -789,28 +789,30 @@ export const api = {
     },
 
     voteDifficulty: async (resolutionId: string, vote: Difficulty): Promise<void> => {
-        const userId = api.getCurrentUserId();
-        if (!userId) throw new Error('Not authenticated');
+        // Peer votes cannot update `resolutions` directly because of RLS.
+        // Use RPC (security definer) that enforces same-group + public resolution.
+        const { error } = await supabase.rpc('vote_resolution_difficulty', {
+            p_resolution_id: resolutionId,
+            p_vote: vote,
+        });
 
-        const { data: res } = await supabase
-            .from('resolutions')
-            .select('*')
-            .eq('id', resolutionId)
-            .single();
+        if (error) {
+            console.error('[Supabase] voteDifficulty RPC error:', error);
+            throw new Error(error.message || 'Failed to vote difficulty');
+        }
+    },
 
-        if (!res) throw new Error('Resolution not found');
-        if (res.user_id === userId) throw new Error('Cannot vote on own resolution');
-        if (res.is_private) throw new Error('Cannot vote on private resolution');
+    voteCredibility: async (resolutionId: string, date: string, type: 'BELIEVE' | 'DOUBT'): Promise<void> => {
+        const { error } = await supabase.rpc('vote_resolution_credibility', {
+            p_resolution_id: resolutionId,
+            p_date: date,
+            p_vote_type: type,
+        });
 
-        const votes = { ...(res.peer_difficulty_votes || {}), [userId]: vote };
-        const voteValues = Object.values(votes) as number[];
-        const avgVotes = voteValues.reduce((a, b) => a + b, 0) / voteValues.length;
-        const effectiveDifficulty = Math.round(((res.difficulty + avgVotes) / 2) * 10) / 10;
-
-        await supabase
-            .from('resolutions')
-            .update({ peer_difficulty_votes: votes, effective_difficulty: effectiveDifficulty })
-            .eq('id', resolutionId);
+        if (error) {
+            console.error('[Supabase] voteCredibility RPC error:', error);
+            throw new Error(error.message || 'Failed to vote credibility');
+        }
     },
 
     // --- Bets ---

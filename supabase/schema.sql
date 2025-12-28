@@ -221,6 +221,224 @@ create trigger on_auth_user_created
     for each row execute procedure public.handle_new_user();
 
 -- ============================================
+-- RPC: Peer Review Voting (bypasses RLS safely)
+-- ============================================
+
+/**
+ * vote_resolution_difficulty
+ *
+ * Allows a user to cast a difficulty vote on a PUBLIC resolution owned by someone else,
+ * only if both users are in the same group (profiles.group_id matches).
+ *
+ * This is implemented as SECURITY DEFINER to avoid loosening UPDATE RLS on resolutions.
+ */
+create or replace function public.vote_resolution_difficulty(
+    p_resolution_id uuid,
+    p_vote integer
+)
+returns void
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+    v_user_id uuid := auth.uid();
+    v_resolution_owner_id uuid;
+    v_is_private boolean;
+    v_declared_difficulty numeric;
+    v_votes jsonb;
+    v_avg_votes numeric;
+    v_effective numeric;
+    v_voter_group uuid;
+    v_owner_group uuid;
+begin
+    if v_user_id is null then
+        raise exception 'Not authenticated';
+    end if;
+
+    if p_vote < 1 or p_vote > 5 then
+        raise exception 'Invalid vote';
+    end if;
+
+    select r.user_id, r.is_private, r.difficulty, r.peer_difficulty_votes
+    into v_resolution_owner_id, v_is_private, v_declared_difficulty, v_votes
+    from public.resolutions r
+    where r.id = p_resolution_id;
+
+    if v_resolution_owner_id is null then
+        raise exception 'Resolution not found';
+    end if;
+
+    if v_resolution_owner_id = v_user_id then
+        raise exception 'Cannot vote on own resolution';
+    end if;
+
+    if v_is_private then
+        raise exception 'Cannot vote on private resolution';
+    end if;
+
+    select p.group_id into v_voter_group
+    from public.profiles p
+    where p.id = v_user_id;
+
+    select p.group_id into v_owner_group
+    from public.profiles p
+    where p.id = v_resolution_owner_id;
+
+    if v_voter_group is null or v_owner_group is null or v_voter_group <> v_owner_group then
+        raise exception 'Not in same group';
+    end if;
+
+    v_votes := coalesce(v_votes, '{}'::jsonb) || jsonb_build_object(v_user_id::text, p_vote);
+
+    select avg((value)::numeric) into v_avg_votes
+    from jsonb_each_text(v_votes);
+
+    v_effective := round(((v_declared_difficulty + v_avg_votes) / 2)::numeric, 1);
+
+    update public.resolutions
+    set peer_difficulty_votes = v_votes,
+        effective_difficulty = v_effective
+    where id = p_resolution_id;
+end;
+$$;
+
+/**
+ * vote_resolution_credibility
+ *
+ * Allows a user to cast a BELIEVE/DOUBT vote for a PUBLIC resolution on a given date,
+ * only if both users are in the same group.
+ *
+ * credibility jsonb shape:
+ * {
+ *   "YYYY-MM-DD": { "believers": ["uid"...], "doubters": ["uid"...] }
+ * }
+ */
+create or replace function public.vote_resolution_credibility(
+    p_resolution_id uuid,
+    p_date text,
+    p_vote_type text
+)
+returns void
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+    v_user_id uuid := auth.uid();
+    v_resolution_owner_id uuid;
+    v_is_private boolean;
+    v_voter_group uuid;
+    v_owner_group uuid;
+    v_credibility jsonb;
+    v_existing_entry jsonb;
+    v_existing_believers jsonb;
+    v_existing_doubters jsonb;
+    v_believers text[];
+    v_doubters text[];
+    v_new_entry jsonb;
+    v_new_credibility jsonb;
+begin
+    if v_user_id is null then
+        raise exception 'Not authenticated';
+    end if;
+
+    if p_date is null or length(trim(p_date)) = 0 then
+        raise exception 'Date required';
+    end if;
+
+    if p_vote_type not in ('BELIEVE', 'DOUBT') then
+        raise exception 'Invalid vote type';
+    end if;
+
+    select r.user_id, r.is_private, r.credibility
+    into v_resolution_owner_id, v_is_private, v_credibility
+    from public.resolutions r
+    where r.id = p_resolution_id;
+
+    if v_resolution_owner_id is null then
+        raise exception 'Resolution not found';
+    end if;
+
+    if v_resolution_owner_id = v_user_id then
+        raise exception 'Cannot vote on own resolution';
+    end if;
+
+    if v_is_private then
+        raise exception 'Cannot vote on private resolution';
+    end if;
+
+    select p.group_id into v_voter_group
+    from public.profiles p
+    where p.id = v_user_id;
+
+    select p.group_id into v_owner_group
+    from public.profiles p
+    where p.id = v_resolution_owner_id;
+
+    if v_voter_group is null or v_owner_group is null or v_voter_group <> v_owner_group then
+        raise exception 'Not in same group';
+    end if;
+
+    v_existing_entry := coalesce((v_credibility -> p_date), '{"believers":[],"doubters":[]}'::jsonb);
+    v_existing_believers := coalesce((v_existing_entry -> 'believers'), '[]'::jsonb);
+    v_existing_doubters := coalesce((v_existing_entry -> 'doubters'), '[]'::jsonb);
+
+    if p_vote_type = 'BELIEVE' then
+        -- believers add uid; doubters remove uid
+        v_believers := array(
+            select distinct val
+            from (
+                select jsonb_array_elements_text(v_existing_believers) as val
+                union all
+                select v_user_id::text as val
+            ) s
+        );
+
+        v_doubters := array(
+            select distinct val
+            from (
+                select jsonb_array_elements_text(v_existing_doubters) as val
+            ) s
+            where val <> v_user_id::text
+        );
+    else
+        -- doubters add uid; believers remove uid
+        v_doubters := array(
+            select distinct val
+            from (
+                select jsonb_array_elements_text(v_existing_doubters) as val
+                union all
+                select v_user_id::text as val
+            ) s
+        );
+
+        v_believers := array(
+            select distinct val
+            from (
+                select jsonb_array_elements_text(v_existing_believers) as val
+            ) s
+            where val <> v_user_id::text
+        );
+    end if;
+
+    v_new_entry := jsonb_build_object(
+        'believers', to_jsonb(coalesce(v_believers, array[]::text[])),
+        'doubters', to_jsonb(coalesce(v_doubters, array[]::text[]))
+    );
+
+    v_new_credibility := jsonb_set(coalesce(v_credibility, '{}'::jsonb), array[p_date], v_new_entry, true);
+
+    update public.resolutions
+    set credibility = v_new_credibility
+    where id = p_resolution_id;
+end;
+$$;
+
+grant execute on function public.vote_resolution_difficulty(uuid, integer) to authenticated;
+grant execute on function public.vote_resolution_credibility(uuid, text, text) to authenticated;
+
+-- ============================================
 -- INDEXES for performance
 -- ============================================
 create index if not exists idx_profiles_group on public.profiles(group_id);
